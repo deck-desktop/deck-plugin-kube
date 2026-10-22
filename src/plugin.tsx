@@ -339,7 +339,12 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
         break;
       case "forward": {
         const target = `${kind.kind === "Service" ? "svc" : "pod"}/${name}`;
-        const first = kind.kind === "Service" ? o.spec?.ports?.[0]?.port : podPorts(o)[0]?.port;
+        // kubectl port-forward carries TCP only, so the first TCP port is the one to suggest
+        // (coredns lists DNS over UDP first).
+        const tcp = (p: { protocol?: string }) => (p.protocol ?? "TCP") === "TCP";
+        const first = kind.kind === "Service"
+          ? (o.spec?.ports as { port: number; protocol?: string }[] | undefined)?.find(tcp)?.port
+          : podPorts(o).find(tcp)?.port;
         setPrompt({
           title: `Port-forward ${target}`,
           subtitle: "local:remote, or one port for both. :remote picks a free local port.",
