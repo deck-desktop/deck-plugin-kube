@@ -241,6 +241,30 @@ assert.deepEqual(k.args.contexts("C:\\f.yaml"), ["config", "view", "-o", "json",
 assert.deepEqual(k.args.contexts(), ["config", "view", "-o", "json"]);
 assert.deepEqual(k.args.ping("c"), ["version", "-o", "json", "--request-timeout=8s", "--context", "c"]);
 
+// ---- SSH tunnels -----------------------------------------------------------------------------
+assert.deepEqual(k.serverHostPort("https://127.0.0.1:6443"), { host: "127.0.0.1", port: 6443 });
+assert.deepEqual(k.serverHostPort("https://k8s.example.com"), { host: "k8s.example.com", port: 443 });
+assert.deepEqual(k.serverHostPort("https://[::1]:6443/"), { host: "[::1]", port: 6443 });
+assert.equal(k.serverHostPort("not a url"), null);
+const tun = k.args.tunnel({ host: "vps", target: "127.0.0.1:6443", port: 23456 });
+assert.deepEqual(tun.slice(-3), ["-L", "127.0.0.1:23456:127.0.0.1:6443", "vps"], "only this PC can use the forward");
+assert.ok(tun.includes("BatchMode=yes"), "never waits on a password prompt nobody can answer");
+assert.ok(tun.includes("ExitOnForwardFailure=yes"), "a port in use fails, rather than connecting with no forward");
+assert.ok(tun.includes("-N"));
+assert.equal(k.tunnelServer(23456), "https://127.0.0.1:23456");
+assert.equal(k.tunnelPort(0), 20000);
+assert.ok(k.tunnelPort(0.99999) < 40000);
+assert.ok(k.tunnelOpen("debug1: Entering interactive session."));
+assert.ok(!k.tunnelOpen("debug1: Local forwarding listening on 127.0.0.1 port 23456."),
+  "Windows' ssh says this before a bind that then fails");
+assert.ok(k.tunnelBindFailed("channel_setup_fwd_listener_tcpip: cannot listen to port: 23998"), "Windows' wording");
+assert.ok(!k.tunnelOpen("debug1: Authenticating to vps:22 as 'root'"));
+assert.ok(k.tunnelBindFailed("bind [127.0.0.1]:23456: Address already in use"));
+assert.ok(k.tunnelBindFailed("Could not request local forwarding."));
+assert.deepEqual(k.args.setServer("C:\\f.yaml", "k3s", "https://127.0.0.1:23456", "203.0.113.5"),
+  ["config", "set-cluster", "k3s", "--server=https://127.0.0.1:23456", "--tls-server-name=203.0.113.5", "--kubeconfig", "C:\\f.yaml"]);
+assert.ok(!k.args.setServer("C:\\f.yaml", "k3s", "https://x").some((a) => a.startsWith("--tls-server-name")));
+
 assert.ok(k.isLocalServer("https://127.0.0.1:6443"));
 assert.ok(k.isLocalServer("https://localhost:6443"));
 assert.ok(k.isLocalServer("https://0.0.0.0:6443"));

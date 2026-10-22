@@ -658,6 +658,43 @@ export function decodeSecret(b64: string): { text: string; binary: boolean } {
 
 // ---- kubectl's arguments -------------------------------------------------------------------------
 
+/** A server address's host and port, as an `ssh -L` target takes them. HTTPS's port when none is given. */
+export function serverHostPort(server: string): { host: string; port: number } | null {
+  const m = /^https?:\/\/(\[[^\]]+\]|[^:/]+)(?::(\d+))?/i.exec(server.trim());
+  return m ? { host: m[1], port: m[2] ? Number(m[2]) : 443 } : null;
+}
+
+/**
+ * A cluster reached through SSH: `ssh -L` from a port on this PC to the API server's address as
+ * the server itself sees it (127.0.0.1:6443 for k3s). The kubeconfig then points at the local
+ * end, with the original host as its TLS server name, so the API server's certificate still
+ * matches.
+ */
+export interface Tunnel {
+  /** The kubeconfig's cluster entry it serves, whose server address is the local end. */
+  cluster: string;
+  /** What comes after `ssh`: an alias from ~/.ssh/config, or user@host. */
+  host: string;
+  /** The API server as the SSH host reaches it, `host:port`. */
+  target: string;
+  /** The local port the kubeconfig points at. */
+  port: number;
+}
+
+export const tunnelServer = (port: number) => `https://127.0.0.1:${port}`;
+
+/** A local port for a new tunnel, away from the ports dev servers favour. */
+export const tunnelPort = (random = Math.random()) => 20000 + Math.floor(random * 20000);
+
+/**
+ * Whether ssh's output says the forward is open, or that its local port was taken. Not "Local
+ * forwarding listening on": Windows' OpenSSH prints that before the bind, and then fails it
+ * ("bind [127.0.0.1]:N: Permission denied"). "Entering interactive session" comes only once every
+ * forward is set up, and with ExitOnForwardFailure never after a failed one.
+ */
+export const tunnelOpen = (line: string) => /Entering interactive session/.test(line);
+export const tunnelBindFailed = (line: string) => /Address already in use|cannot listen to port|Could not request local forwarding/i.test(line);
+
 /**
  * A context, as one string: its name for one in the user's own kubeconfig, `<file>|<name>` for
  * one in a kubeconfig added here. One string so it can be a React dependency and a saved choice
@@ -685,8 +722,15 @@ const scope = (namespaced: boolean, ns: string) => (!namespaced ? [] : ns ? ["-n
 
 export const args = {
   contexts: (file = "") => ["config", "view", "-o", "json", ...(file ? ["--kubeconfig", file] : [])],
-  setServer: (file: string, cluster: string, server: string) =>
-    ["config", "set-cluster", cluster, `--server=${server}`, "--kubeconfig", file],
+  setServer: (file: string, cluster: string, server: string, tlsName?: string) =>
+    ["config", "set-cluster", cluster, `--server=${server}`, ...(tlsName ? [`--tls-server-name=${tlsName}`] : []), "--kubeconfig", file],
+  /** The SSH tunnel, with the options Deck's own SSH uses: keys only (no prompt can be answered),
+   *  and kept alive. `-v` prints the line that says the forwards are set up. */
+  tunnel: (t: Tunnel) => [
+    "-N", "-v", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes",
+    "-L", `127.0.0.1:${t.port}:${t.target}`, t.host,
+  ],
   /** Whether the cluster answers: the server's version, waiting at most a few seconds. */
   ping: (c: string) => ["version", "-o", "json", "--request-timeout=8s", ...ctx(c)],
   events: (c: string, ns: string | undefined, uid: string) =>

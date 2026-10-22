@@ -23,8 +23,8 @@ import {
   type Kind, type Obj, type Usage,
 } from "./kube";
 import {
-  discardKubeconfig, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs, startForward,
-  stopAll, stopForward, useForwards, useMetrics, useWatch, type Context, type Prefs,
+  discardKubeconfig, ensureContext, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs,
+  startForward, stopAll, stopForward, tunnelHost, useForwards, useMetrics, useWatch, type Context, type Prefs,
 } from "./run";
 import { AddCluster } from "./Clusters";
 import { Details, CreatePanel, Note, StatusChip, actionsFor, type Act } from "./Details";
@@ -190,7 +190,8 @@ function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onV
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-1">
           <div className="min-w-0 flex-1">
-            <Select value={context} onChange={(e) => onContext(e.target.value)} title={current?.server || "Cluster"}>
+            <Select value={context} onChange={(e) => onContext(e.target.value)}
+              title={current ? (tunnelHost(current.file) ? `Through ssh ${tunnelHost(current.file)}` : current.server) : "Cluster"}>
               {own.length > 0 && added.length > 0 ? <optgroup label="Your kubeconfig">{own.map(option)}</optgroup> : own.map(option)}
               {added.length > 0 && (own.length > 0 ? <optgroup label="Added here">{added.map(option)}</optgroup> : added.map(option))}
             </Select>
@@ -331,7 +332,10 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
         setPanel({ type: "details", key: objKey(o), logs: { container: c, n: Date.now() } });
         break;
       case "shell":
-        runInTerminal(`${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`, shellCommand(context, name, n, c));
+        // The terminal's kubectl goes through the cluster's SSH tunnel too, so it is opened first.
+        ensureContext(context).then(
+          () => runInTerminal(`${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`, shellCommand(context, name, n, c)),
+          fail("Shell"));
         break;
       case "forward": {
         const target = `${kind.kind === "Service" ? "svc" : "pod"}/${name}`;

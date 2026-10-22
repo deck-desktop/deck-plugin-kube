@@ -1,6 +1,6 @@
 // Running kubectl and helm from Deck: one-shot calls through `exec`, live rows through a
-// `kubectl get --watch` stream, metrics on a poll, and port-forwards, the one thing that outlives
-// the tab and so lives here at module scope (stopped by `dispose`).
+// `kubectl get --watch` stream, metrics on a poll, and port-forwards and SSH tunnels, the things
+// that outlive the tab and so live here at module scope (stopped by `dispose`).
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   configDelete, configRead, configWrite, dataDir, exec, procKill, procStream,
@@ -8,14 +8,27 @@ import {
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
 import {
-  applyEvent, args, forwardedPort, jsonSplitter, parseContexts, parseTop,
-  type Kind, type KubeConfig, type Obj, type Usage, type WatchEvent,
+  applyEvent, args, ctxParts, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelBindFailed,
+  tunnelOpen, tunnelPort, tunnelServer,
+  type Kind, type KubeConfig, type Obj, type Tunnel, type Usage, type WatchEvent,
 } from "./kube";
 
 // ---- one-shot calls --------------------------------------------------------------------------
 
+/**
+ * The kubeconfig a kubectl or helm call names, when it is one added here: its SSH tunnel, if it
+ * has one, has to be open before the call. `kubectl config` only reads and writes the file.
+ */
+function kubeconfigOf(a: string[]): string {
+  if (a[0] === "config") return "";
+  const i = a.indexOf("--kubeconfig");
+  return i >= 0 ? a[i + 1] : "";
+}
+
 /** Runs a program to completion: its stdout, or an error carrying what it printed to stderr. */
 async function run(program: string, a: string[]): Promise<string> {
+  const file = kubeconfigOf(a);
+  if (file) await ensureTunnel(file);
   const out = await exec(program, a);
   if (out.code !== 0) throw new Error(out.stderr.trim() || out.stdout.trim() || `${program} exited with ${out.code}`);
   return out.stdout;
@@ -57,8 +70,32 @@ const handlers = new Map<string, (l: ProcLine) => void>();
 const unlisten = listen<ProcLine>("proc-line", (e) => handlers.get(e.payload.id)?.(e.payload));
 let seq = 0;
 
-/** Runs a program, handing each output line to `onLine`, until it exits or `procKill(id)`. */
-function stream(id: string, program: string, a: string[], onLine: (l: ProcLine) => void): Promise<ProcResult> {
+// A stream that waits on a tunnel can be stopped while it waits, and must not start afterwards
+// with nobody left to stop it.
+const waiting = new Set<string>();
+const stopped = new Set<string>();
+
+/** Stops a stream, whether it is running yet or still waiting on its tunnel. */
+export function stop(id: string) {
+  if (waiting.has(id)) stopped.add(id);
+  void procKill(id).catch(() => { /* already ended */ });
+}
+
+/** Runs a program, handing each output line to `onLine`, until it exits or is stopped. */
+async function stream(id: string, program: string, a: string[], onLine: (l: ProcLine) => void): Promise<ProcResult> {
+  const file = kubeconfigOf(a);
+  if (file) {
+    waiting.add(id);
+    try {
+      await ensureTunnel(file);
+    } catch (e) {
+      stopped.delete(id);
+      throw e;
+    } finally {
+      waiting.delete(id);
+    }
+    if (stopped.delete(id)) return { id, code: 0, cancelled: true };
+  }
   handlers.set(id, onLine);
   return procStream(id, program, a).finally(() => handlers.delete(id));
 }
@@ -114,7 +151,7 @@ export function useWatch(context: string, kind: Kind | undefined, ns: string, re
       alive = false;
       clearTimeout(flushTimer);
       clearTimeout(retryTimer);
-      if (id) void procKill(id).catch(() => {});
+      if (id) stop(id);
     };
   }, [context, kind?.resource, ns, ready]);
   return state;
@@ -190,7 +227,7 @@ export function useLogs(context: string, pod: string, ns: string, container: str
       if (!timer) timer = setTimeout(flush, 100);
     }).then((r) => { if (alive) { flush(); setState(r.code === 0 || r.cancelled ? "ended" : "error"); } },
       (e) => { console.warn("[kube] logs failed", e); if (alive) setState("error"); });
-    return () => { alive = false; clearTimeout(timer); void procKill(id).catch(() => {}); };
+    return () => { alive = false; clearTimeout(timer); stop(id); };
   }, [context, pod, ns, container, o.previous, o.timestamps, o.tail]);
   return { lines, state, clear: () => setLines([]) };
 }
@@ -247,7 +284,7 @@ export function startForward(context: string, ns: string, target: string, remote
 export function stopForward(id: string) {
   forwards = forwards.filter((f) => f.id !== id);
   emit();
-  void procKill(id).catch(() => {});
+  stop(id);
 }
 
 // ---- clusters --------------------------------------------------------------------------------
@@ -259,13 +296,124 @@ export type Context = ReturnType<typeof parseContexts>["contexts"][number];
  * named in the `clusters` config, and passed to kubectl with --kubeconfig. The user's own
  * kubeconfig is read as well and never written.
  */
-async function addedNames(): Promise<string[]> {
+interface Index { files: string[]; tunnels: Record<string, Tunnel> }
+
+/** The `clusters` config as last read or written: the files, and the tunnel of each that has one. */
+let index: Index = { files: [], tunnels: {} };
+
+async function readIndex(): Promise<Index> {
   const raw = await configRead("clusters").catch((e) => { console.warn("[kube] could not read the added clusters", e); return ""; });
-  try { return raw.trim() ? (JSON.parse(raw).files ?? []) : []; } catch { return []; }
+  try {
+    const p = raw.trim() ? JSON.parse(raw) : {};
+    index = { files: p.files ?? [], tunnels: p.tunnels ?? {} };
+  } catch {
+    index = { files: [], tunnels: {} };
+  }
+  return index;
 }
 
-const saveNames = (files: string[]) => configWrite("clusters", JSON.stringify({ files }));
+async function writeIndex(next: Index) {
+  index = next;
+  await configWrite("clusters", JSON.stringify(next));
+}
+
 const fileName = (path: string) => path.slice(path.lastIndexOf("\\") + 1);
+
+// ---- SSH tunnels -----------------------------------------------------------------------------
+//
+// A cluster whose API port is not open to this PC is reached through `ssh -L`, opened the first
+// time a call names its kubeconfig and shared by every call after it. It stays open until Deck
+// exits or the plugin reloads; if it drops, the next call opens it again.
+
+/** Tunnels of kubeconfigs being added, not yet in the index. */
+const stagedTunnels = new Map<string, Tunnel>();
+const tunnelFor = (file: string) => index.tunnels[fileName(file)] ?? stagedTunnels.get(fileName(file));
+
+/** The SSH host a cluster added here is reached through, if any. */
+export const tunnelHost = (file: string) => (file ? tunnelFor(file)?.host : undefined);
+
+interface Open { id: string; ready: Promise<void>; failedAt?: number }
+const open = new Map<string, Open>();
+
+/** The tunnel a context needs, open: for a shell, which kubectl runs in a terminal rather than here. */
+export function ensureContext(key: string): Promise<void> {
+  const { file } = ctxParts(key);
+  return file ? ensureTunnel(file) : Promise.resolve();
+}
+
+function ensureTunnel(file: string, retried = false): Promise<void> {
+  const t = tunnelFor(file);
+  if (!t) return Promise.resolve();
+  const cur = open.get(file);
+  // A failure is answered for a few seconds rather than retried by every call that was waiting.
+  if (cur && !(cur.failedAt && Date.now() - cur.failedAt > 5000)) return cur.ready;
+
+  const id = `kube:tunnel:${++seq}`;
+  let bindFailed = false;
+  let opened = false;
+  let last = "";
+  const entry: Open = { id, ready: Promise.resolve() };
+  entry.ready = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`ssh ${t.host} did not open the tunnel within 20 seconds${last ? `: ${last}` : ""}`));
+      stop(id);
+    }, 20000);
+    stream(id, "ssh", args.tunnel(t), (l) => {
+      if (tunnelOpen(l.line)) { opened = true; clearTimeout(timer); resolve(); return; }
+      if (tunnelBindFailed(l.line)) bindFailed = true;
+      // The last line that is not chatter is what the failure says.
+      if (l.line.trim() && !/^(debug|Authenticated to|Warning: Permanently added)/.test(l.line)) last = l.line.trim();
+    }).then((r) => {
+      clearTimeout(timer);
+      // Dropped after it was open: forget it, so the next call opens a new one.
+      if (opened && open.get(file) === entry) open.delete(file);
+      if (!r.cancelled) console.warn("[kube] ssh tunnel ended", t.host, last);
+      reject(new Error(`ssh ${t.host} failed${last ? `: ${last}` : ` (exit ${r.code})`}`));
+    }, (e) => { clearTimeout(timer); reject(e); });
+  }).catch(async (e: Error) => {
+    // The local port was taken since it was chosen: choose another, once.
+    if (bindFailed && !retried && !opened) {
+      await movePort(file, t);
+      open.delete(file);
+      return ensureTunnel(file, true);
+    }
+    entry.failedAt = Date.now();
+    throw e;
+  });
+  open.set(file, entry);
+  return entry.ready;
+}
+
+/** Points a tunnel, and its kubeconfig, at a new local port. */
+async function movePort(file: string, t: Tunnel) {
+  const moved = { ...t, port: tunnelPort() };
+  await run("kubectl", args.setServer(file, t.cluster, tunnelServer(moved.port)));
+  const name = fileName(file);
+  if (index.tunnels[name]) await writeIndex({ ...index, tunnels: { ...index.tunnels, [name]: moved } });
+  else stagedTunnels.set(name, moved);
+}
+
+function closeTunnel(file: string) {
+  const o = open.get(file);
+  if (o) { open.delete(file); stop(o.id); }
+}
+
+/** Drops the tunnel of a kubeconfig being added, which is to be reached directly after all. */
+export function unstageTunnel(file: string) {
+  closeTunnel(file);
+  stagedTunnels.delete(fileName(file));
+}
+
+/**
+ * Makes a kubeconfig being added reach its cluster through SSH: its server becomes the tunnel's
+ * local end, with the original host as the TLS server name.
+ */
+export async function stageTunnel(file: string, t: Omit<Tunnel, "port">, tlsName: string) {
+  closeTunnel(file);
+  const tunnel = { ...t, port: tunnelPort() };
+  await run("kubectl", args.setServer(file, t.cluster, tunnelServer(tunnel.port), tlsName));
+  stagedTunnels.set(fileName(file), tunnel);
+}
 
 /** Every context: the user's own kubeconfig's, then those of the kubeconfigs added here. */
 export async function loadContexts(): Promise<{ current: string; contexts: Context[] }> {
@@ -274,7 +422,7 @@ export async function loadContexts(): Promise<{ current: string; contexts: Conte
     return {};
   }));
   const dir = await dataDir();
-  const added = await Promise.all((await addedNames()).map((n) => {
+  const added = await Promise.all((await readIndex()).files.map((n) => {
     const file = `${dir}\\${n}`;
     return kubectlJson<KubeConfig>(args.contexts(file)).then((c) => parseContexts(c, file).contexts, (e) => {
       console.warn("[kube] could not read an added kubeconfig", file, e);
@@ -299,17 +447,29 @@ export async function stageKubeconfig(text: string): Promise<{ file: string; con
   }
 }
 
-/** Lists a staged kubeconfig, so it is read from now on. */
+/** Lists a staged kubeconfig, and its tunnel, so they are read from now on. */
 export async function keepKubeconfig(file: string) {
-  const names = await addedNames();
-  if (!names.includes(fileName(file))) await saveNames([...names, fileName(file)]);
+  const name = fileName(file);
+  const { files, tunnels } = await readIndex();
+  const t = stagedTunnels.get(name);
+  stagedTunnels.delete(name);
+  await writeIndex({
+    files: files.includes(name) ? files : [...files, name],
+    tunnels: t ? { ...tunnels, [name]: t } : tunnels,
+  });
 }
 
-/** Removes an added kubeconfig: from the list, and its file. */
+/** Removes an added kubeconfig: its tunnel, its place in the list, and its file. */
 export async function discardKubeconfig(file: string) {
-  const names = await addedNames();
-  if (names.includes(fileName(file))) await saveNames(names.filter((n) => n !== fileName(file)));
-  await configDelete(fileName(file)).catch((e) => console.warn("[kube] could not remove a kubeconfig", file, e));
+  const name = fileName(file);
+  closeTunnel(file);
+  stagedTunnels.delete(name);
+  const { files, tunnels } = await readIndex();
+  if (files.includes(name) || tunnels[name]) {
+    const { [name]: _gone, ...rest } = tunnels;
+    await writeIndex({ files: files.filter((n) => n !== name), tunnels: rest });
+  }
+  await configDelete(name).catch((e) => console.warn("[kube] could not remove a kubeconfig", file, e));
 }
 
 // ---- remembered choices ------------------------------------------------------------------------
@@ -337,10 +497,12 @@ export function savePrefs(p: Prefs) {
   configWrite("prefs", text).catch((e) => console.warn("[kube] could not save prefs", e));
 }
 
-/** Stops what module scope started: the stream listener and every port-forward. */
+/** Stops what module scope started: the stream listener, every port-forward and every tunnel. */
 export function stopAll() {
   unlisten.then((f) => f()).catch(() => {});
-  for (const f of forwards) void procKill(f.id).catch(() => {});
+  for (const f of forwards) stop(f.id);
+  for (const o of open.values()) stop(o.id);
   forwards = [];
+  open.clear();
   handlers.clear();
 }

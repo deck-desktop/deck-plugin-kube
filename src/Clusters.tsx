@@ -1,11 +1,12 @@
 // Adding a cluster: paste the kubeconfig it came with, the way Lens adds one. The text is kept as
 // a file of its own in the plugin's folder and passed to kubectl with --kubeconfig, so the user's
-// own kubeconfig is never written to.
+// own kubeconfig is never written to. A cluster whose API port this PC cannot reach directly is
+// reached through an SSH tunnel to its server (run.ts opens it when the cluster is used).
 import { useEffect, useRef, useState } from "react";
 import { ShipWheel } from "lucide-react";
-import { GhostButton, PrimaryButton, TextInput, tone } from "deck-plugin-sdk/ui";
-import { args, isLocalServer, serverOn } from "./kube";
-import { discardKubeconfig, keepKubeconfig, kubectl, stageKubeconfig, type Context } from "./run";
+import { GhostButton, PrimaryButton, Segmented, TextInput, tone } from "deck-plugin-sdk/ui";
+import { args, isLocalServer, serverHostPort, serverOn } from "./kube";
+import { discardKubeconfig, keepKubeconfig, kubectl, stageKubeconfig, stageTunnel, unstageTunnel, type Context } from "./run";
 import { Note, YamlEditor } from "./Details";
 
 export function AddCluster({ onAdded, onCancel }: {
@@ -21,6 +22,11 @@ export function AddCluster({ onAdded, onCancel }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [failedPing, setFailedPing] = useState(false);
+  const [via, setVia] = useState<"direct" | "ssh">("direct");
+  const [sshHost, setSshHost] = useState("");
+  // The API server as the SSH host reaches it: the kubeconfig's own address, which for a
+  // kubeconfig taken from the server (127.0.0.1:6443) is exactly right.
+  const [target, setTarget] = useState("");
 
   // A kubeconfig staged and then left (Back, Cancel, the tab closed) is not kept.
   const pending = useRef<string | null>(null);
@@ -38,6 +44,11 @@ export function AddCluster({ onAdded, onCancel }: {
       const s = await stageKubeconfig(text);
       setStaged(s);
       setServers(Object.fromEntries(s.contexts.map((c) => [c.cluster, c.server])));
+      const hp = serverHostPort(s.contexts[0].server);
+      setTarget(hp ? `${hp.host}:${hp.port}` : "");
+      // A kubeconfig that points at the server itself most likely came off the server, which
+      // most likely does not expose its API port: SSH is the better first guess.
+      setVia(isLocalServer(s.contexts[0].server) ? "ssh" : "direct");
     } catch (e) {
       setError(String((e as Error).message ?? e));
     } finally {
@@ -52,13 +63,28 @@ export function AddCluster({ onAdded, onCancel }: {
     setError("");
   };
 
+  // One cluster per tunnel: a kubeconfig naming several is connected to directly.
+  const canSsh = clusters.length === 1;
+  const ssh = canSsh && via === "ssh";
+
   const add = async (anyway: boolean) => {
     if (!staged) return;
     setBusy(true);
     setError("");
     try {
-      for (const [cluster, server] of clusters) {
-        if (servers[cluster] && servers[cluster] !== server) await kubectl(args.setServer(staged.file, cluster, servers[cluster]));
+      if (ssh) {
+        if (!sshHost.trim() || !/^[^\s:]+:\d+$/.test(target.trim())) {
+          setError("Name the SSH host, and the API server's address on it as host:port.");
+          return;
+        }
+        // The certificate is checked against the address the kubeconfig named, not the tunnel's.
+        const [cluster, server] = clusters[0];
+        const tlsName = (serverHostPort(server)?.host ?? "").replace(/^\[|\]$/g, "");
+        await stageTunnel(staged.file, { cluster, host: sshHost.trim(), target: target.trim() }, tlsName);
+      } else {
+        // Written every time: an SSH attempt before this one has pointed the file at its tunnel.
+        unstageTunnel(staged.file);
+        for (const [cluster, server] of clusters) await kubectl(args.setServer(staged.file, cluster, servers[cluster] || server));
       }
       if (!anyway) {
         try {
@@ -119,7 +145,29 @@ export function AddCluster({ onAdded, onCancel }: {
               </span>
             ))}
           </section>
-          <section className="flex flex-col gap-2" style={{ maxWidth: 560 }}>
+          {canSsh && (
+            <section className="flex flex-col gap-2" style={{ maxWidth: 560 }}>
+              <h3 className="text-[12px] font-medium text-text-secondary">Connect</h3>
+              <Segmented value={via} onChange={setVia} layoutId="kube-connect-via"
+                options={[{ value: "direct", label: "Directly" }, { value: "ssh", label: "Through SSH" }]} />
+            </section>
+          )}
+          {ssh && (
+            <section className="flex flex-col gap-2" style={{ maxWidth: 560 }}>
+              <label className="flex flex-col gap-1 text-[12px] text-text-muted">
+                SSH host
+                <TextInput value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="vps, or user@server" />
+                <span>What you type after ssh in a terminal: a host from your SSH config, or user@address. Your SSH keys
+                  are used; a password cannot be typed here.</span>
+              </label>
+              <label className="flex flex-col gap-1 text-[12px] text-text-muted">
+                API server, as the SSH host reaches it
+                <TextInput value={target} onChange={(e) => setTarget(e.target.value)} placeholder="127.0.0.1:6443" />
+                <span>From the kubeconfig. Leave it unless the server sees the API at another address.</span>
+              </label>
+            </section>
+          )}
+          {!ssh && <section className="flex flex-col gap-2" style={{ maxWidth: 560 }}>
             <h3 className="text-[12px] font-medium text-text-secondary">Server</h3>
             {clusters.map(([cluster, server]) => (
               <div key={cluster} className="flex flex-col gap-1">
@@ -130,7 +178,7 @@ export function AddCluster({ onAdded, onCancel }: {
                 )}
               </div>
             ))}
-          </section>
+          </section>}
           {error && <Note color={tone("red")}>{error}</Note>}
           <div className="flex items-center gap-2">
             <PrimaryButton onClick={() => void add(false)} disabled={busy}>{busy ? "Connecting…" : "Add"}</PrimaryButton>
