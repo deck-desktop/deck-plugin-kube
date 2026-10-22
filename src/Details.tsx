@@ -467,7 +467,8 @@ function SecretValue({ name, b64 }: { name: string; b64: string }) {
         </span>
       </div>
       <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-subtle bg-elev px-2 py-1.5 font-mono text-[11px] text-text-muted">
-        {shown ? v.text : "•".repeat(Math.min(24, v.text.length || 8))}
+        {/* A fixed number of dots: one per character would tell the value's length. */}
+        {shown ? v.text : "••••••••"}
       </pre>
     </div>
   );

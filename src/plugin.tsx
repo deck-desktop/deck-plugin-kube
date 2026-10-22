@@ -99,7 +99,12 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
   const remove = (c: Context) => setConfirm({
     title: `Remove ${c.name}?`, confirmLabel: "Remove",
     body: "Its kubeconfig, added here, is deleted. The cluster itself is not touched.",
-    onConfirm: () => void discardKubeconfig(c.file).then(() => setReload((r) => r + 1)),
+    // Off the screen first: a view still on it would ask kubectl about it once its file is gone.
+    onConfirm: () => {
+      setContexts(null);
+      setContext("");
+      void discardKubeconfig(c.file).then(() => setReload((r) => r + 1));
+    },
   });
 
   const pickNs = (n: string) => {
@@ -183,7 +188,10 @@ function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onV
     return [...m];
   }, [crds]);
   const isOn = (v: View) => JSON.stringify(v) === JSON.stringify(view);
-  const fold = (g: string) => setFolded((f) => ({ ...f, [g]: !(f[g] ?? false) }));
+  // Custom resources, and each API group in them, start folded: a cluster can define hundreds.
+  // The toggle reads the same default the heading shows, or its first click would do nothing.
+  const isFolded = (g: string) => folded[g] ?? (g === "Custom resources" || g.startsWith("crd:"));
+  const fold = (g: string) => setFolded((f) => ({ ...f, [g]: !(f[g] ?? isFolded(g)) }));
 
   return (
     <nav className="flex shrink-0 flex-col gap-2 overflow-auto border-r border-subtle bg-panel px-2 py-2" style={{ width: 210 }}>
@@ -208,22 +216,22 @@ function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onV
       <div className="flex flex-col">
         <NavRow icon={<LayoutDashboard size={13} />} label="Overview" on={isOn({ type: "overview" })} onClick={() => onView({ type: "overview" })} />
         {groups.map(([g, kinds]) => (
-          <NavGroup key={g} title={g} folded={!!folded[g]} onFold={() => fold(g)}>
+          <NavGroup key={g} title={g} folded={isFolded(g)} onFold={() => fold(g)}>
             {kinds.map((k) => (
               <NavRow key={k.resource} label={k.label} on={isOn({ type: "kind", resource: k.resource })}
                 onClick={() => onView({ type: "kind", resource: k.resource })} />
             ))}
           </NavGroup>
         ))}
-        <NavGroup title="Apps" folded={!!folded.Apps} onFold={() => fold("Apps")}>
+        <NavGroup title="Apps" folded={isFolded("Apps")} onFold={() => fold("Apps")}>
           <NavRow icon={<Package size={13} />} label="Helm releases" on={isOn({ type: "helm" })} onClick={() => onView({ type: "helm" })} />
           <NavRow icon={<ArrowRightLeft size={13} />} label="Port-forwards" on={isOn({ type: "forwards" })}
             onClick={() => onView({ type: "forwards" })} count={forwards.length} />
         </NavGroup>
         {!!crdGroups.length && (
-          <NavGroup title="Custom resources" folded={folded["Custom resources"] ?? true} onFold={() => fold("Custom resources")}>
+          <NavGroup title="Custom resources" folded={isFolded("Custom resources")} onFold={() => fold("Custom resources")}>
             {crdGroups.map(([g, kinds]) => (
-              <NavGroup key={g} title={g} folded={folded[`crd:${g}`] ?? true} onFold={() => fold(`crd:${g}`)} nested>
+              <NavGroup key={g} title={g} folded={isFolded(`crd:${g}`)} onFold={() => fold(`crd:${g}`)} nested>
                 {kinds.map((k) => (
                   <NavRow key={k.resource} label={k.label} on={isOn({ type: "kind", resource: k.resource })}
                     onClick={() => onView({ type: "kind", resource: k.resource })} />
