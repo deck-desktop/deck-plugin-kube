@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import {
   ConfirmDialog, type ConfirmState, ContextMenu, type MenuEntry, NamePrompt, type NamePromptState,
-  EmptyState, IconButton, Select, CountChip, Chip, tone, toast,
+  EmptyState, IconButton, Select, CountChip, Chip, tone, notify,
 } from "deck-plugin-sdk/ui";
 import { openExternal } from "deck-plugin-sdk/bridge";
 import {
@@ -24,7 +24,7 @@ import {
 } from "./kube";
 import {
   discardKubeconfig, ensureContext, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs,
-  startForward, stopAll, stopForward, tunnelHost, useForwards, useMetrics, useWatch, type Context, type Prefs,
+  SOURCE, startForward, stopAll, stopForward, tunnelHost, useForwards, useMetrics, useWatch, type Context, type Prefs,
 } from "./run";
 import { AddCluster } from "./Clusters";
 import { Details, CreatePanel, Note, StatusChip, actionsFor, type Act } from "./Details";
@@ -329,11 +329,16 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
 
   const act = (o: Obj, a: Act, container?: string) => {
     const name = o.metadata.name, n = o.metadata.namespace ?? "";
-    const done = (what: string) => (out: string) => toast(out.trim().split("\n").pop() || what, "success");
+    // Deck's notifications: a card, and a row in the bell. Keyed by the object, so acting on it
+    // again replaces its earlier notification rather than adding another.
+    const key = `${context}|${kind.resource}/${n}/${name}`;
+    const done = (title: string) => (out: string) =>
+      notify({ kind: "activity", source: SOURCE, key, title, body: out.trim().split("\n").pop() ?? "" });
     const fail = (what: string) => (e: Error) => {
       console.warn(`[kube] ${what} failed`, e);
-      toast(`${what} failed: ${e.message ?? e}`, "error", { ms: 8000 });
+      notify({ kind: "error", source: SOURCE, key, title: `${what} failed: ${name}`, body: String(e.message ?? e) });
     };
+    const invalid = (title: string) => notify({ kind: "error", source: SOURCE, key, title });
     const c = container ?? (o.spec?.containers?.[0]?.name as string | undefined) ?? "";
     switch (a) {
       case "logs":
@@ -359,9 +364,9 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
           initial: first ? String(first) : "", placeholder: "8080:80", confirmLabel: "Forward",
           onSave: (v) => {
             const p = parsePorts(v);
-            if (!p) { toast(`"${v}" is not a port or local:remote`, "error"); return; }
+            if (!p) { invalid(`"${v}" is not a port or local:remote`); return; }
+            // It notifies once the port is open, or that it failed (run.ts).
             startForward(context, n, target, p.remote, p.local);
-            toast(`Forwarding ${target} port ${p.remote}. See Port-forwards.`, "success");
           },
         });
         break;
@@ -371,8 +376,8 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
           title: `Scale ${name}`, subtitle: "How many replicas", initial: String(o.spec?.replicas ?? 1), confirmLabel: "Scale",
           onSave: (v) => {
             const r = Number(v);
-            if (!Number.isInteger(r) || r < 0) { toast(`"${v}" is not a number of replicas`, "error"); return; }
-            kubectl(args.scale(context, kind.resource, name, n, r)).then(done("Scaled"), fail("Scale"));
+            if (!Number.isInteger(r) || r < 0) { invalid(`"${v}" is not a number of replicas`); return; }
+            kubectl(args.scale(context, kind.resource, name, n, r)).then(done(`Scaled ${name} to ${r}`), fail("Scale"));
           },
         });
         break;
@@ -380,7 +385,7 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
         setConfirm({
           title: `Restart ${name}?`, confirmLabel: "Restart", danger: false,
           body: "Its pods are replaced one by one, the way a new rollout replaces them.",
-          onConfirm: () => void kubectl(args.restart(context, kind.resource, name, n)).then(done("Restarted"), fail("Restart")),
+          onConfirm: () => void kubectl(args.restart(context, kind.resource, name, n)).then(done(`Restarted ${name}`), fail("Restart")),
         });
         break;
       case "trigger": {
@@ -389,18 +394,21 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
         break;
       }
       case "suspend":
-        kubectl(args.suspend(context, name, n, !o.spec?.suspend)).then(done(o.spec?.suspend ? "Resumed" : "Suspended"), fail("Suspend"));
+        kubectl(args.suspend(context, name, n, !o.spec?.suspend))
+          .then(done(o.spec?.suspend ? `Resumed ${name}` : `Suspended ${name}`), fail(o.spec?.suspend ? "Resume" : "Suspend"));
         break;
       case "cordon":
-        kubectl(args.cordon(context, name, !o.spec?.unschedulable)).then(done("Done"), fail("Cordon"));
+        kubectl(args.cordon(context, name, !o.spec?.unschedulable))
+          .then(done(o.spec?.unschedulable ? `Uncordoned ${name}` : `Cordoned ${name}`), fail(o.spec?.unschedulable ? "Uncordon" : "Cordon"));
         break;
       case "drain":
         setConfirm({
           title: `Drain ${name}?`, confirmLabel: "Drain",
           body: "The node is cordoned and its pods are evicted, except those of daemon sets. Pods using emptyDir lose that data.",
           onConfirm: () => {
-            toast(`Draining ${name}…`);
-            void kubectl(args.drain(context, name)).then(done("Drained"), fail("Drain"));
+            // In progress until the result replaces it (the same key): a drain takes a while.
+            notify({ kind: "activity", source: SOURCE, key, transient: true, title: `Draining ${name}…` });
+            void kubectl(args.drain(context, name)).then(done(`Drained ${name}`), fail("Drain"));
           },
         });
         break;
@@ -410,7 +418,7 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
           body: n ? `In namespace ${n}. This cannot be undone.` : "This cannot be undone.",
           onConfirm: () => {
             if (panel?.type === "details" && panel.key === objKey(o)) setPanel(null);
-            void kubectl(args.delete(context, kind.resource, name, n || undefined)).then(done("Deleted"), fail("Delete"));
+            void kubectl(args.delete(context, kind.resource, name, n || undefined)).then(done(`Deleted ${name}`), fail("Delete"));
           },
         });
         break;

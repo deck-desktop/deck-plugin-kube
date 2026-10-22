@@ -3,14 +3,18 @@
 // that outlive the tab and so live here at module scope (stopped by `dispose`).
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
-  configDelete, configRead, configWrite, dataDir, exec, procKill, procStream, sshTunnelClose, sshTunnelOpen,
+  configDelete, configRead, configWrite, dataDir, exec, openExternal, procKill, procStream, sshTunnelClose, sshTunnelOpen,
   type ProcLine, type ProcResult,
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
+import { dismissNotification, notify } from "deck-plugin-sdk/ui";
 import {
   applyEvent, args, ctxParts, editLock, editPatch, editRefusal, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelGone, tunnelServer,
   type Kind, type KubeConfig, type Obj, type Tunnel, type Usage, type WatchEvent,
 } from "./kube";
+
+/** The name Deck's notifications show this plugin's under. */
+export const SOURCE = "Kubernetes";
 
 // ---- one-shot calls --------------------------------------------------------------------------
 
@@ -303,17 +307,31 @@ export function startForward(context: string, ns: string, target: string, remote
   forwards = [...forwards, { id, context, ns, target, remote, local: local || null, state: "starting", error: "" }];
   emit();
   let err = "";
+  let told = false;
+  const failed = (error: string) => {
+    patch(id, { state: "failed", error });
+    notify({ kind: "error", source: SOURCE, key: id, title: `Port-forward ${target} stopped`, body: error });
+  };
   stream(id, "kubectl", args.portForward(context, target, ns, local, remote), (l) => {
     const port = forwardedPort(l.line);
-    if (port) patch(id, { local: port, state: "open" });
-    else if (l.stream === "stderr") err = l.line;
+    if (port) {
+      patch(id, { local: port, state: "open" });
+      // kubectl prints a line for each address it listens on (127.0.0.1, [::1]): say it once.
+      if (!told) {
+        told = true;
+        notify({
+          kind: "activity", source: SOURCE, key: id, title: `Forwarding ${target}`, body: `localhost:${port} to port ${remote}`,
+          actions: [{ label: "Open", primary: true, run: () => void openExternal(`http://localhost:${port}`) }],
+        });
+      }
+    } else if (l.stream === "stderr") err = l.line;
   }).then((r) => {
     if (r.cancelled) return;
     console.warn("[kube] port-forward ended", target, err);
-    patch(id, { state: "failed", error: err || `kubectl exited with ${r.code}` });
+    failed(err || `kubectl exited with ${r.code}`);
   }, (e) => {
     console.warn("[kube] port-forward failed", target, e);
-    patch(id, { state: "failed", error: String(e) });
+    failed(String(e));
   });
 }
 
@@ -321,6 +339,8 @@ export function stopForward(id: string) {
   forwards = forwards.filter((f) => f.id !== id);
   emit();
   stop(id);
+  // Its card and bell row offered to open a port that is now closed.
+  dismissNotification(SOURCE, id);
 }
 
 // ---- clusters --------------------------------------------------------------------------------
