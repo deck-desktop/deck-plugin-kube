@@ -29,8 +29,13 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
 ## What it needs
 
 - **kubectl** on PATH. Docker Desktop brings one; otherwise `winget install Kubernetes.kubectl`.
-- **A kubeconfig** naming at least one cluster (`%USERPROFILE%\.kube\config`). Turning on
-  Kubernetes in Docker Desktop writes one for a local cluster.
+- **A cluster.** Every cluster in your own kubeconfig (`%USERPROFILE%\.kube\config`) shows up by
+  itself. For one on a server, use **Add a cluster** (the + beside the cluster picker) and paste
+  the kubeconfig it came with: k3s leaves it at `/etc/rancher/k3s/k3s.yaml`, kubeadm at
+  `/etc/kubernetes/admin.conf`, and a hosted provider offers it for download. It is kept in the
+  plugin's own folder, and your own kubeconfig is not changed. When the pasted file points at
+  127.0.0.1 (as k3s's does), you are asked for the server's real address. This PC has to reach
+  the cluster's API port, usually 6443.
 - **helm**, for the Helm view only.
 - **metrics-server** in the cluster, for CPU and memory in use only.
 
