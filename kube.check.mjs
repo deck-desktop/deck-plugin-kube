@@ -243,17 +243,23 @@ assert.deepEqual(topPods.get("default/web"), { cpu: 0.25, memory: 2 ** 30 });
 const topNodes = k.parseTop("docker-desktop   180m   2%   1700Mi   21%", true);
 assert.deepEqual(topNodes.get("/docker-desktop"), { cpu: 0.18, memory: 1700 * 2 ** 20 });
 
+assert.deepEqual(k.parsePorts("8080:80"), { local: 8080, remote: 80 });
+assert.deepEqual(k.parsePorts("80"), { local: 80, remote: 80 });
+assert.deepEqual(k.parsePorts(":80"), { local: "", remote: 80 }, "no local port: kubectl picks a free one");
+assert.deepEqual(k.parsePorts(" 9000 : 90 "), { local: 9000, remote: 90 });
+for (const bad of ["", ":", "abc", "80:", "0", "70000", "80:0", "1:2:3"]) assert.equal(k.parsePorts(bad), null, bad);
+
+const ageCol = k.KINDS.find((x) => x.resource === "pods").columns.find((c) => c.title === "Age");
+const older = { metadata: { name: "a", creationTimestamp: "2026-01-01T00:00:00Z" } };
+const newer = { metadata: { name: "b", creationTimestamp: "2026-06-01T00:00:00Z" } };
+assert.ok(ageCol.sortKey(newer) < ageCol.sortKey(older), "ascending age puts the youngest first");
+
 assert.equal(k.forwardedPort("Forwarding from 127.0.0.1:54321 -> 80"), 54321);
 assert.equal(k.forwardedPort("Forwarding from [::1]:8080 -> 8080"), 8080);
 assert.equal(k.forwardedPort("Handling connection for 8080"), null);
 
 assert.deepEqual(k.decodeSecret(Buffer.from("héllo").toString("base64")), { text: "héllo", binary: false });
 assert.equal(k.decodeSecret(Buffer.from([0xff, 0xfe, 0x00]).toString("base64")).binary, true);
-
-const withFields = { metadata: { name: "x", managedFields: [{}], resourceVersion: "9" } };
-assert.equal(k.stripForEdit(withFields).metadata.managedFields, undefined);
-assert.equal(k.stripForEdit(withFields).metadata.resourceVersion, "9", "the version stays: it is replace's lock");
-assert.ok(withFields.metadata.managedFields, "the original is not changed");
 
 assert.deepEqual(k.allocatable([{ metadata: { name: "n" }, status: { allocatable: { cpu: "4", memory: "8Gi" } } }]), { cpu: 4, memory: 8 * 2 ** 30 });
 assert.deepEqual(k.requested([

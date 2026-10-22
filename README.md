@@ -12,7 +12,7 @@ npm run install-local  # when it is done: install it into your real Deck
 Start a test Deck from Settings › Plugins › Open a test Deck: it keeps its own settings and data,
 so trying the plugin never touches your real Deck.
 
-`src/plugin.tsx` is the entry point; its default export is the tab.
+
 
 ## What it does
 

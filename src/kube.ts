@@ -201,6 +201,8 @@ export interface Column {
   status?: boolean;
   /** Numbers and addresses: right-aligned or monospaced. */
   mono?: boolean;
+  /** What the column sorts by, when its text would sort wrongly ("5m" after "2h"). */
+  sortKey?: (o: Obj) => number;
 }
 
 export interface Kind {
@@ -214,7 +216,12 @@ export interface Kind {
   columns: Column[];
 }
 
-const AGE: Column = { title: "Age", get: (o, now) => age(o.metadata.creationTimestamp, now), mono: true };
+/** Sorts youngest first: by the timestamp, newest at the top. */
+const byTime = (ts: string | undefined) => -(Date.parse(ts ?? "") || 0);
+const AGE: Column = {
+  title: "Age", get: (o, now) => age(o.metadata.creationTimestamp, now), mono: true,
+  sortKey: (o) => byTime(o.metadata.creationTimestamp),
+};
 const n = (v: unknown) => String(v ?? 0);
 const count = (o: Obj, field: "data" | "stringData") => String(Object.keys(o[field] ?? {}).length);
 
@@ -420,7 +427,7 @@ export const KINDS: Kind[] = [
     { title: "Object", get: (o) => ref(o.involvedObject) },
     { title: "Message", get: (o) => o.message ?? "" },
     { title: "Count", get: (o) => n(o.count ?? o.series?.count ?? 1), mono: true },
-    { title: "Last seen", get: (o, now) => age(eventTime(o), now), mono: true },
+    { title: "Last seen", get: (o, now) => age(eventTime(o), now), mono: true, sortKey: (o) => byTime(eventTime(o)) },
   ] },
 ];
 
@@ -479,6 +486,7 @@ export function crdKinds(list: { items?: Obj[] }): Kind[] {
         return p.type === "date" ? age(String(val), now) : typeof val === "object" ? JSON.stringify(val) : String(val);
       },
       mono: p.type === "integer" || p.type === "number",
+      sortKey: p.type === "date" ? (o: Obj) => byTime(String(jsonPath(o, p.jsonPath) ?? "")) : undefined,
     }));
     if (!printer.some((p) => p.name.toLowerCase() === "age")) columns.push(AGE);
     return {
@@ -587,6 +595,20 @@ export function parseTop(text: string, nodes: boolean): Map<string, Usage> {
   return out;
 }
 
+/**
+ * What was typed for a port-forward: `8080:80` (local, remote), `80` (the same port both sides)
+ * or `:80` (any free local port). Null when it is not one of those.
+ */
+export function parsePorts(s: string): { local: number | ""; remote: number } | null {
+  const m = /^\s*(\d*)\s*(?::\s*(\d+))?\s*$/.exec(s);
+  if (!m || (!m[1] && !m[2])) return null;
+  const ok = (p: number) => p > 0 && p < 65536;
+  if (m[2] === undefined) return ok(+m[1]) ? { local: +m[1], remote: +m[1] } : null;
+  const remote = +m[2];
+  if (!ok(remote) || (m[1] && !ok(+m[1]))) return null;
+  return { local: m[1] ? +m[1] : "", remote };
+}
+
 /** "Forwarding from 127.0.0.1:54321 -> 80": the local port kubectl chose, or null. */
 export function forwardedPort(line: string): number | null {
   const m = /Forwarding from (?:127\.0\.0\.1|\[::1\]|localhost):(\d+) ->/.exec(line);
@@ -602,13 +624,6 @@ export function decodeSecret(b64: string): { text: string; binary: boolean } {
   } catch {
     return { text: b64, binary: true };
   }
-}
-
-/** The object as YAML for editing: the server's bookkeeping (managedFields) left out. */
-export function stripForEdit(o: Obj): Obj {
-  const copy = structuredClone(o);
-  delete copy.metadata.managedFields;
-  return copy;
 }
 
 // ---- kubectl's arguments -------------------------------------------------------------------------
