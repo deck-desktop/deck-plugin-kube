@@ -27,6 +27,19 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
 - **Helm releases**: values (yours or with the chart's defaults), the rendered manifest, the
   revision history with rollback, and uninstall.
 
+## For agents
+
+Deck's MCP server gets tools for the same clusters, including those added Through SSH (the
+tools open their own tunnel):
+
+- **Read only:** `kube_contexts`, `kube_get`, `kube_describe`, `kube_logs`, `kube_events`,
+  `kube_top`.
+- **Change the cluster:** `kube_apply` (YAML) and `kube_kubectl` (any kubectl command: scale,
+  rollout restart, delete, …). Kept apart from the read-only ones so an agent can be allowed to
+  read without asking and still asked before it changes anything.
+
+A tool's `context` is an id from `kube_contexts`; without one it uses the cluster picked in the tab.
+
 ## What it needs
 
 - **kubectl** on PATH. Docker Desktop brings one; otherwise `winget install Kubernetes.kubectl`.
