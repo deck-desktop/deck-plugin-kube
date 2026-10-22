@@ -188,6 +188,10 @@ assert.equal(k.applyEvent(rows, { type: "ADDED", object: obj("a", "1") }), true)
 assert.equal(k.applyEvent(rows, { type: "MODIFIED", object: obj("a", "1") }), false, "the same version is no change");
 assert.equal(k.applyEvent(rows, { type: "MODIFIED", object: obj("a", "2") }), true);
 assert.equal(rows.get("ns/a").metadata.resourceVersion, "2");
+const fat = { metadata: { name: "f", namespace: "ns", resourceVersion: "1", managedFields: [{ manager: "k3s" }] } };
+k.applyEvent(rows, { type: "ADDED", object: fat });
+assert.equal(rows.get("ns/f").metadata.managedFields, undefined, "the server's bookkeeping is not kept per row");
+rows.delete("ns/f");
 assert.equal(k.applyEvent(rows, { type: "BOOKMARK", object: obj("a", "3") }), false);
 assert.equal(k.applyEvent(rows, { type: "DELETED", object: obj("a", "3") }), true);
 assert.equal(rows.size, 0);

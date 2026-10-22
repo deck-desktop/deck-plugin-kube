@@ -529,10 +529,10 @@ export function jsonPath(o: unknown, path: string): unknown {
 // ---- kubectl's output --------------------------------------------------------------------------
 
 /**
- * Splits the stream `kubectl get -w -o json` prints into its objects. kubectl pretty-prints each
- * one over many lines, and the only line that is a bare `}` is an object's closing brace at the
- * top level (anything nested is indented), so that is where one object ends. A line that is a
- * whole object by itself (`{...}`) is taken as one too.
+ * Splits the stream `kubectl get -w -o json` prints into its objects. With --output-watch-events
+ * (kubectl 1.36) each event is one compact line. Older ones pretty-print an object over many lines,
+ * and there the only line that is a bare `}` is its closing brace at the top level (anything
+ * nested is indented), so that is where one ends.
  */
 export function jsonSplitter(): (line: string) => unknown[] {
   let buf: string[] = [];
@@ -562,6 +562,9 @@ export function applyEvent(rows: Map<string, Obj>, ev: WatchEvent): boolean {
   if (prev && prev.metadata.resourceVersion && prev.metadata.resourceVersion === ev.object.metadata.resourceVersion) {
     return false;
   }
+  // The server's bookkeeping, often most of the object and shown nowhere: a watch prints it
+  // even where `get -o yaml` leaves it out.
+  delete ev.object.metadata.managedFields;
   rows.set(key, ev.object);
   return true;
 }
