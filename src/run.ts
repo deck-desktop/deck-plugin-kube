@@ -127,6 +127,9 @@ export function useWatch(context: string, kind: Kind | undefined, ns: string, re
       id = `kube:watch:${++seq}`;
       const split = jsonSplitter();
       let err = "";
+      // An SSH cluster's tunnel first, so the wait for rows below starts when they can arrive.
+      await ensureContext(context).catch(() => { /* the stream reports it */ });
+      if (!alive) return;
       // An empty list prints nothing at all, so "loading" ends on a timer as well as on rows.
       const quiet = setTimeout(() => alive && setState((s) => (s.loading ? { ...s, loading: false } : s)), 2500);
       rows.clear();

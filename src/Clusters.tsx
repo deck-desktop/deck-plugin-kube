@@ -9,11 +9,13 @@ import { args, isLocalServer, serverHostPort, serverOn } from "./kube";
 import { discardKubeconfig, keepKubeconfig, kubectl, stageKubeconfig, stageTunnel, unstageTunnel, type Context } from "./run";
 import { Note, YamlEditor } from "./Details";
 
-export function AddCluster({ onAdded, onCancel }: {
+export function AddCluster({ onAdded, onCancel, onRecheck }: {
   /** Called with the key of the first context the new kubeconfig names. */
   onAdded: (key: string) => void;
   /** Absent when there is nothing to go back to (no cluster at all yet). */
   onCancel?: () => void;
+  /** With no cluster yet: reads the kubeconfigs again, for one written meanwhile (kind, Docker Desktop). */
+  onRecheck?: () => void;
 }) {
   const [text, setText] = useState("");
   const [staged, setStaged] = useState<{ file: string; contexts: Context[] } | null>(null);
@@ -131,6 +133,12 @@ export function AddCluster({ onAdded, onCancel }: {
           <div className="flex items-center gap-2">
             <PrimaryButton onClick={() => void next()} disabled={busy || !text.trim()}>{busy ? "Reading…" : "Next"}</PrimaryButton>
             {onCancel && <GhostButton onClick={onCancel}>Cancel</GhostButton>}
+            {onRecheck && (
+              <span className="text-[12px] text-text-muted">
+                Clusters in your own kubeconfig show up by themselves.{" "}
+                <button className="underline hover:text-text-primary" onClick={onRecheck}>Check again</button>
+              </span>
+            )}
           </div>
         </>
       )}

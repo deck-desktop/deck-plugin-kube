@@ -123,7 +123,7 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
     );
   }
   if (!contexts) return <Centered><span className="text-[12px] text-text-muted">Reading your kubeconfig…</span></Centered>;
-  if (!contexts.length) return <div className="flex h-full min-h-0 flex-col"><AddCluster onAdded={added} /></div>;
+  if (!contexts.length) return <div className="flex h-full min-h-0 flex-col"><AddCluster onAdded={added} onRecheck={() => setReload((r) => r + 1)} /></div>;
 
   const kind = view.type === "kind" ? kindByResource(view.resource, crds) : undefined;
 
