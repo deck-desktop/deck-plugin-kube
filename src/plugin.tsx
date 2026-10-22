@@ -473,7 +473,7 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
                       <div className="flex items-center gap-1.5">
                         <span className="truncate" style={{ maxWidth: 420 }} title={o.metadata.name}>{o.metadata.name}</span>
                         {kind.kind === "Pod" && (
-                          <span className="ml-auto hidden shrink-0 gap-0.5 group-hover:flex">
+                          <span className="ml-auto flex shrink-0 gap-0.5 opacity-0 group-hover:opacity-100">
                             <IconButton size="row" title="Logs" onClick={(e) => { e.stopPropagation(); act(o, "logs"); }}><ScrollText size={12} /></IconButton>
                             <IconButton size="row" title="Shell" onClick={(e) => { e.stopPropagation(); act(o, "shell"); }}><TerminalSquare size={12} /></IconButton>
                           </span>
