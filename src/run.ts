@@ -8,7 +8,7 @@ import {
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
 import {
-  applyEvent, args, ctxParts, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelGone, tunnelServer,
+  applyEvent, args, ctxParts, editLock, editPatch, editRefusal, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelGone, tunnelServer,
   type Kind, type KubeConfig, type Obj, type Tunnel, type Usage, type WatchEvent,
 } from "./kube";
 
@@ -54,14 +54,43 @@ export async function installed(program: string): Promise<boolean> {
  * Secret being edited goes through here, so the file is never left behind (nor carried along by
  * Deck's backup).
  */
-export async function withFile<T>(text: string, fn: (path: string) => Promise<T>): Promise<T> {
-  const name = "apply.yaml";
+export async function withFile<T>(text: string, fn: (path: string) => Promise<T>, name = "apply.yaml"): Promise<T> {
   await configWrite(name, text);
   try {
     return await fn(`${await dataDir()}\\${name}`);
   } finally {
     await configDelete(name).catch((e) => console.warn("[kube] could not remove the edited file", e));
   }
+}
+
+// ---- saving an edit --------------------------------------------------------------------------
+
+/** Somebody changed the object's spec since the edit began; saving anyway writes over it. */
+export class EditConflict extends Error {}
+
+/**
+ * Saves an edit of an object's YAML (src/kube.ts says why as a patch). `base` is the YAML the edit
+ * started from. Unless `force`, an object whose spec changed since then is refused with
+ * EditConflict. Resolves with what kubectl said, or "No changes".
+ */
+export async function saveEdit(context: string, resource: string, base: string, edited: string, force: boolean): Promise<string> {
+  const json = await withFile(base, (a) => withFile(edited, (b) => kubectl(args.toJson(context, [a, b])), "edited.yaml"), "original.yaml");
+  const split = jsonSplitter();
+  const [original, next] = json.split(/\r?\n/).flatMap(split) as Obj[];
+  if (!original || !next) throw new Error("kubectl did not read the YAML back.");
+  const refused = editRefusal(original, next);
+  if (refused) throw new Error(refused);
+  const patch = editPatch(original, next);
+  if (!patch) return "No changes";
+  const ns = original.metadata.namespace;
+  if (!force) {
+    const current = await kubectlJson<Obj>(args.get(context, resource, original.metadata.name, ns, "json"));
+    if (editLock(current) !== editLock(original)) {
+      throw new EditConflict("Changed on the server since you opened it: somebody else edited it.");
+    }
+  }
+  // Not a .json name: a JSON file in the data folder would wake Deck's config listeners.
+  return withFile(JSON.stringify(patch), (p) => kubectl(args.patch(context, resource, original.metadata.name, ns, p)), "patch.txt");
 }
 
 // ---- streams ---------------------------------------------------------------------------------

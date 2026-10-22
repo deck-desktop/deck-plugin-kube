@@ -23,6 +23,8 @@ export interface Obj {
     annotations?: Record<string, string>;
     ownerReferences?: { kind: string; name: string }[];
     resourceVersion?: string;
+    /** Moved by a change to the spec only, where the kind keeps one. */
+    generation?: number;
     managedFields?: unknown;
   };
   spec?: any;
@@ -648,6 +650,63 @@ export function forwardedPort(line: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// ---- saving an edit ----------------------------------------------------------------------------
+//
+// An edit is written back as a merge patch of what changed between the YAML it started from and the
+// YAML as edited, not by replacing the whole object: a whole object carries its resourceVersion,
+// which the status a controller keeps updating moves every few seconds, so a replace made while a
+// deployment settles is refused although nobody else touched it. Whether somebody else did is
+// asked of editLock instead.
+
+const BOOKKEEPING = ["resourceVersion", "managedFields", "generation", "creationTimestamp", "uid", "selfLink"];
+
+/** What an edit can change: no status (the main resource ignores it) and none of the server's bookkeeping. */
+function editable(o: Obj): Obj {
+  const c = structuredClone(o);
+  delete c.status;
+  for (const k of BOOKKEEPING) delete (c.metadata as Record<string, unknown>)[k];
+  return c;
+}
+
+const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * The JSON merge patch (RFC 7386) that turns `a` into `b`, or undefined when they are the same: maps
+ * are compared key by key, a key gone from `b` becomes null, anything else (a list, a value) is
+ * sent whole when it differs.
+ */
+export function mergePatch(a: unknown, b: unknown): unknown {
+  if (isMap(a) && isMap(b)) {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(b)) {
+      const p = mergePatch(a[k], b[k]);
+      if (p !== undefined) out[k] = p;
+    }
+    for (const k of Object.keys(a)) if (!(k in b)) out[k] = null;
+    return Object.keys(out).length ? out : undefined;
+  }
+  return JSON.stringify(a) === JSON.stringify(b) ? undefined : b;
+}
+
+/** The patch an edit makes, null when it changes nothing. */
+export function editPatch(original: Obj, edited: Obj): Record<string, unknown> | null {
+  return (mergePatch(editable(original), editable(edited)) as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * What says somebody else changed an object under an edit: its generation, which only a change to
+ * its spec moves, where the kind keeps one; otherwise any change at all.
+ */
+export const editLock = (o: Obj) => String(o.metadata.generation ?? o.metadata.resourceVersion ?? "");
+
+/** Why an edit cannot be saved as a patch of the same object, or null when it can. */
+export function editRefusal(original: Obj, edited: Obj): string | null {
+  const id = (o: Obj) => `${o.kind}/${o.metadata?.namespace ?? ""}/${o.metadata?.name}`;
+  if (!edited?.metadata?.name) return "The YAML has no metadata.name.";
+  return id(original) === id(edited) ? null
+    : "The kind, name or namespace changed. That makes another object: create it from New resource instead.";
+}
+
 /** A Secret's value: base64 as stored, decoded as UTF-8. Bytes that are not text stay base64. */
 export function decodeSecret(b64: string): { text: string; binary: boolean } {
   try {
@@ -735,9 +794,11 @@ export const args = {
     ["get", resource, ...scope(namespaced, ns), "-o", "json", ...ctx(c)],
   get: (c: string, resource: string, name: string, ns: string | undefined, format: "json" | "yaml") =>
     ["get", resource, name, ...(ns ? ["-n", ns] : []), "-o", format, ...ctx(c)],
-  /** Writes an edited object back. `replace` keeps the resourceVersion as a lock, so an object
-   *  changed since it was opened is refused rather than overwritten. */
-  replace: (c: string, file: string) => ["replace", "-f", file, ...ctx(c)],
+  /** YAML files as JSON, parsed by kubectl on this PC: nothing is sent to be created. */
+  toJson: (c: string, files: string[]) => ["create", "--dry-run=client", "-o", "json", ...files.flatMap((f) => ["-f", f]), ...ctx(c)],
+  /** An edit written back as a merge patch: only what was changed. */
+  patch: (c: string, resource: string, name: string, ns: string | undefined, file: string) =>
+    ["patch", resource, name, ...(ns ? ["-n", ns] : []), "--type", "merge", "--patch-file", file, ...ctx(c)],
   apply: (c: string, file: string) => ["apply", "-f", file, ...ctx(c)],
   delete: (c: string, resource: string, name: string, ns: string | undefined) =>
     ["delete", resource, name, ...(ns ? ["-n", ns] : []), "--wait=false", ...ctx(c)],

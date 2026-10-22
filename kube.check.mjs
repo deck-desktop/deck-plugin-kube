@@ -208,7 +208,7 @@ for (const [name, a] of Object.entries({
   delete: k.args.delete("c", "pods", "p", "ns"),
   scale: k.args.scale("c", "deployments", "d", "ns", 2),
   restart: k.args.restart("c", "deployments", "d", "ns"),
-  replace: k.args.replace("c", "f.yaml"),
+  patch: k.args.patch("c", "deployments", "d", "ns", "p.txt"),
   drain: k.args.drain("c", "n"),
   logs: k.args.logs("c", "p", "ns", "app", { follow: true, previous: false, tail: 500, timestamps: false }),
   forward: k.args.portForward("c", "pod/p", "ns", "", 80),
@@ -284,6 +284,42 @@ assert.deepEqual(k.helmArgs.list("c", ""), ["list", "-A", "-o", "json", "--kube-
 assert.deepEqual(k.helmArgs.rollback("", "r", "ns", 3), ["rollback", "r", "3", "-n", "ns", "--wait=false"]);
 assert.equal(k.helmTime("2026-10-22 10:01:02.123456 +0200 CEST"), "2026-10-22T10:01:02+02:00");
 assert.ok(!Number.isNaN(Date.parse(k.helmTime("2026-10-22 10:01:02.123456 +0000 UTC"))));
+
+// ---- saving an edit ----------------------------------------------------------------------------
+assert.equal(k.mergePatch({ a: 1 }, { a: 1 }), undefined, "nothing changed, nothing sent");
+assert.deepEqual(k.mergePatch({ a: 1, b: { c: 2, d: 3 } }, { a: 1, b: { c: 5, d: 3 } }), { b: { c: 5 } }, "only the changed leaf");
+assert.deepEqual(k.mergePatch({ a: 1, b: 2 }, { a: 1 }), { b: null }, "a removed key is null");
+assert.deepEqual(k.mergePatch({ l: [1, 2] }, { l: [1, 3] }), { l: [1, 3] }, "a changed list is sent whole");
+assert.deepEqual(k.mergePatch({}, { n: { m: 1 } }), { n: { m: 1 } }, "an added map");
+
+const dep = (replicas, extra = {}) => ({
+  apiVersion: "apps/v1", kind: "Deployment",
+  metadata: { name: "web", namespace: "default", resourceVersion: "100", generation: 3, uid: "u", creationTimestamp: "t", managedFields: [{}] },
+  spec: { replicas, template: { spec: { containers: [{ name: "c", image: "nginx" }] } } },
+  status: { readyReplicas: 1 },
+  ...extra,
+});
+assert.deepEqual(k.editPatch(dep(1), dep(2)), { spec: { replicas: 2 } }, "the patch is the change only");
+assert.equal(k.editPatch(dep(1), { ...dep(1), status: { readyReplicas: 9 }, metadata: { ...dep(1).metadata, resourceVersion: "999" } }), null,
+  "status and bookkeeping are not an edit");
+assert.equal(k.editPatch(dep(1), dep(1)), null);
+const label = dep(1); label.metadata.labels = { tier: "web" };
+assert.deepEqual(k.editPatch(dep(1), label), { metadata: { labels: { tier: "web" } } });
+
+assert.equal(k.editLock(dep(1)), "3", "a deployment is locked by its generation");
+assert.equal(k.editLock({ metadata: { name: "cm", resourceVersion: "77" } }), "77", "a kind without one by its version");
+const settled = dep(1); settled.metadata.resourceVersion = "105"; settled.status = { readyReplicas: 1, observedGeneration: 3 };
+assert.equal(k.editLock(settled), k.editLock(dep(1)), "a status update is not somebody else's edit");
+const respec = dep(4); respec.metadata.generation = 4;
+assert.notEqual(k.editLock(respec), k.editLock(dep(1)), "a spec change is");
+
+assert.equal(k.editRefusal(dep(1), dep(2)), null);
+const renamed = dep(1); renamed.metadata = { ...renamed.metadata, name: "web2" };
+assert.match(k.editRefusal(dep(1), renamed), /another object/, "a rename is not an edit of this object");
+assert.match(k.editRefusal(dep(1), { kind: "Deployment", metadata: {} }), /no metadata.name/);
+assert.deepEqual(k.args.toJson("c", ["a.yaml", "b.yaml"]), ["create", "--dry-run=client", "-o", "json", "-f", "a.yaml", "-f", "b.yaml", "--context", "c"],
+  "the YAML is read by kubectl locally: client dry-run creates nothing");
+assert.deepEqual(k.args.patch("", "deployments", "web", "default", "p.txt"), ["patch", "deployments", "web", "-n", "default", "--type", "merge", "--patch-file", "p.txt"]);
 
 // ---- other output ------------------------------------------------------------------------------
 const ctxs = k.parseContexts({ "current-context": "b", contexts: [{ name: "a", context: { cluster: "ca" } }, { name: "b", context: { cluster: "cb", namespace: "dev" } }] });

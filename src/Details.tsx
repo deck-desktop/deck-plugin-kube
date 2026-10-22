@@ -1,5 +1,5 @@
-// The panel beside the table: one object's overview, its YAML (editable, written back with
-// `kubectl replace`), a pod's logs, and the object's events.
+// The panel beside the table: one object's overview, its YAML (editable, saved as a patch of what
+// changed; run.ts saveEdit), a pod's logs, and the object's events.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   X, ScrollText, TerminalSquare, ArrowRightLeft, Trash2, RotateCw, Scale, Play, Pause,
@@ -11,7 +11,7 @@ import {
   age, decodeSecret, eventTime, kindActions, nodeStatus, podContainers, podReady, podRestarts,
   podStatus, selectorText, statusTone, args, type Kind, type Obj,
 } from "./kube";
-import { kubectl, kubectlJson, useLogs, withFile } from "./run";
+import { EditConflict, kubectl, kubectlJson, saveEdit, useLogs, withFile } from "./run";
 
 // ---- small pieces ----------------------------------------------------------------------------
 
@@ -115,16 +115,18 @@ export function YamlEditor({ value, onChange, readOnly }: { value: string; onCha
 }
 
 /**
- * An object's YAML, editable. Save writes it back with `kubectl replace`, whose resourceVersion
- * check refuses an object someone changed since it was opened rather than overwriting their
- * change. While nothing is edited, the text follows the object as it changes.
+ * An object's YAML, editable. Save sends only what was changed, so the status a controller keeps
+ * updating does not get in the way, and refuses (until Save anyway) when somebody else changed the
+ * object's spec since the edit began. While nothing is edited, the text follows the object.
  */
 function YamlTab({ context, kind, o }: { context: string; kind: Kind; o: Obj }) {
+  // The latest YAML, and the YAML the edit started from: the base the edit is a change of.
   const [server, setServer] = useState("");
+  const [base, setBase] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const dirty = text !== server;
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; conflict?: boolean } | null>(null);
+  const dirty = text !== base;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
@@ -133,20 +135,20 @@ function YamlTab({ context, kind, o }: { context: string; kind: Kind; o: Obj }) 
     kubectl(args.get(context, kind.resource, o.metadata.name, o.metadata.namespace, "yaml")).then((y) => {
       if (!alive) return;
       setServer(y);
-      if (!dirtyRef.current) setText(y);
+      if (!dirtyRef.current) { setBase(y); setText(y); }
     }, (e) => { console.warn("[kube] could not read YAML", e); if (alive) setMsg({ ok: false, text: String(e.message ?? e) }); });
     return () => { alive = false; };
   }, [context, kind.resource, o.metadata.name, o.metadata.namespace, o.metadata.resourceVersion]);
 
-  const save = async () => {
+  const save = async (force: boolean) => {
     setBusy(true);
     setMsg(null);
     try {
-      const out = await withFile(text, (f) => kubectl(args.replace(context, f)));
+      const out = await saveEdit(context, kind.resource, base, text, force);
       setMsg({ ok: true, text: out.trim() || "Saved" });
-      setServer(text);
+      setBase(text);
     } catch (e) {
-      setMsg({ ok: false, text: String((e as Error).message ?? e) });
+      setMsg({ ok: false, text: String((e as Error).message ?? e), conflict: e instanceof EditConflict });
     } finally {
       setBusy(false);
     }
@@ -155,15 +157,22 @@ function YamlTab({ context, kind, o }: { context: string; kind: Kind; o: Obj }) 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <PrimaryButton onClick={() => void save()} disabled={!dirty || busy}>
+        <PrimaryButton onClick={() => void save(false)} disabled={!dirty || busy}>
           <Save size={13} /> {busy ? "Saving…" : "Save"}
         </PrimaryButton>
-        <GhostButton onClick={() => { setText(server); setMsg(null); }} disabled={!dirty || busy}>
+        <GhostButton onClick={() => { setBase(server); setText(server); setMsg(null); }} disabled={!dirty || busy}>
           <Undo2 size={13} /> Revert
         </GhostButton>
+        {msg?.conflict && (
+          <GhostButton onClick={() => void save(true)} disabled={busy}>Save anyway</GhostButton>
+        )}
         {dirty && <span className="text-[11.5px] text-text-muted">Edited. Changes on the server no longer show until you save or revert.</span>}
       </div>
-      {msg && <Note color={msg.ok ? tone("green") : tone("red")}>{msg.text}</Note>}
+      {msg && (
+        <Note color={msg.ok ? tone("green") : tone("red")}>
+          {msg.conflict ? `${msg.text} Revert shows the latest; Save anyway writes your version over theirs.` : msg.text}
+        </Note>
+      )}
       <YamlEditor value={text} onChange={setText} />
     </div>
   );

@@ -11,8 +11,9 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
   columns). Tables update as the cluster changes; sort by any column, filter by name.
 - **Details beside the table**: an overview for each kind (a pod's containers and their state, a
   deployment's images, a service's ports, a secret's values hidden until you show them, a node's
-  capacity), the object's events, and its **YAML, editable**. Saving uses `kubectl replace`, so an
-  object someone changed after you opened it is refused rather than overwritten.
+  capacity), the object's events, and its **YAML, editable**. Saving sends only what you changed, so a
+  controller updating the object's status does not get in the way; if somebody else changed its
+  spec after you opened it, you are told, and choose between their version and yours.
 - **Logs**: followed live, per container, with the previous container's log after a restart,
   timestamps, a line filter and copy.
 - **Shell**: opens a Deck terminal in the container (bash when the image has it, sh otherwise).
