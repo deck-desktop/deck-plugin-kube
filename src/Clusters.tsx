@@ -38,9 +38,12 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
   }, []);
 
   // A kubeconfig staged and then left (Back, Cancel, the tab closed) is not kept.
+  // Whether it was kept is its own flag, set once: a render after Add (the busy flag clearing)
+  // must not mark the kept file as pending again, or closing the screen would delete it.
   const pending = useRef<string | null>(null);
+  const kept = useRef(false);
   pending.current = staged?.file ?? null;
-  useEffect(() => () => { if (pending.current) void discardKubeconfig(pending.current); }, []);
+  useEffect(() => () => { if (pending.current && !kept.current) void discardKubeconfig(pending.current); }, []);
 
   const clusters = staged
     ? [...new Map(staged.contexts.map((c) => [c.cluster, c.server])).entries()]
@@ -106,7 +109,7 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
         }
       }
       await keepKubeconfig(staged.file);
-      pending.current = null;
+      kept.current = true;
       onAdded(staged.contexts[0].key);
     } catch (e) {
       console.warn("[kube] adding a cluster failed", e);

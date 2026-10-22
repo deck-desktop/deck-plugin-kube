@@ -359,8 +359,9 @@ function ensureTunnel(file: string): Promise<void> {
   const entry: Open = { id: null, ready: Promise.resolve() };
   entry.ready = (async () => {
     const [id, port] = await sshTunnelOpen(t.host, t.target);
-    // Closed while it opened (the tab, a Back): nobody is left to use it.
-    if (open.get(file) !== entry) { void sshTunnelClose(id).catch(() => {}); return; }
+    // Closed while it opened (the tab, a Back, the cluster removed): nobody is left to use it, and
+    // writing the port would make kubectl create the deleted kubeconfig anew, holding only that.
+    if (open.get(file) !== entry || !tunnelFor(file)) { void sshTunnelClose(id).catch(() => {}); return; }
     entry.id = id;
     // Deck picks a free port for each tunnel, so the kubeconfig follows it.
     await run("kubectl", args.setServer(file, t.cluster, tunnelServer(port), t.tlsName));

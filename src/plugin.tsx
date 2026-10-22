@@ -18,7 +18,7 @@ import {
 } from "deck-plugin-sdk/ui";
 import { openExternal } from "deck-plugin-sdk/bridge";
 import {
-  KINDS, age, allocatable, args, crdKinds, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
+  KINDS, age, allocatable, args, crdKinds, ctxParts, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
   parsePorts, podPorts, podSummary, requested, shellCommand,
   type Kind, type Obj, type Usage,
 } from "./kube";
@@ -540,7 +540,7 @@ function ClusterOverview({ context, ns, onView }: { context: string; ns: string;
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-3">
       <div className="flex items-center gap-2">
         <ShipWheel size={16} style={{ color: "#326ce5" }} />
-        <span className="text-[13px] font-medium text-text-primary">{context}</span>
+        <span className="text-[13px] font-medium text-text-primary">{ctxParts(context).name}</span>
         <span className="text-[11.5px] text-text-muted">{ns ? `namespace ${ns}` : "all namespaces"}</span>
       </div>
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
