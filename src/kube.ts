@@ -856,8 +856,10 @@ export const helmArgs = {
   values: (c: string, name: string, ns: string, all: boolean) =>
     ["get", "values", name, "-n", ns, ...(all ? ["--all"] : []), "-o", "yaml", ...kctx(c)],
   manifest: (c: string, name: string, ns: string) => ["get", "manifest", name, "-n", ns, ...kctx(c)],
+  // No --wait either way: neither Helm 3 nor 4 waits by default, and Helm 4's --wait takes a
+  // strategy name, so the --wait=false Helm 3 accepted is an error there.
   rollback: (c: string, name: string, ns: string, rev: number) =>
-    ["rollback", name, String(rev), "-n", ns, "--wait=false", ...kctx(c)],
+    ["rollback", name, String(rev), "-n", ns, ...kctx(c)],
   uninstall: (c: string, name: string, ns: string) => ["uninstall", name, "-n", ns, ...kctx(c)],
 };
 

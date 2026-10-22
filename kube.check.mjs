@@ -281,7 +281,7 @@ assert.deepEqual(fromFile.contexts[0],
   { key: "C:\\f.yaml|default", name: "default", file: "C:\\f.yaml", cluster: "k3s", server: "https://127.0.0.1:6443", namespace: "apps" });
 
 assert.deepEqual(k.helmArgs.list("c", ""), ["list", "-A", "-o", "json", "--kube-context", "c"]);
-assert.deepEqual(k.helmArgs.rollback("", "r", "ns", 3), ["rollback", "r", "3", "-n", "ns", "--wait=false"]);
+assert.deepEqual(k.helmArgs.rollback("", "r", "ns", 3), ["rollback", "r", "3", "-n", "ns"], "no --wait: Helm 4 refuses --wait=false");
 assert.equal(k.helmTime("2026-10-22 10:01:02.123456 +0200 CEST"), "2026-10-22T10:01:02+02:00");
 assert.ok(!Number.isNaN(Date.parse(k.helmTime("2026-10-22 10:01:02.123456 +0000 UTC"))));
 
