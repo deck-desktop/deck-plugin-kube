@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { ShipWheel } from "lucide-react";
 import { GhostButton, PrimaryButton, Segmented, TextInput, tone } from "deck-plugin-sdk/ui";
 import { args, isLocalServer, serverHostPort, serverOn } from "./kube";
+import { sshHosts } from "deck-plugin-sdk/bridge";
 import { discardKubeconfig, keepKubeconfig, kubectl, stageKubeconfig, stageTunnel, unstageTunnel, type Context } from "./run";
 import { Note, YamlEditor } from "./Details";
 
@@ -29,6 +30,12 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
   // The API server as the SSH host reaches it: the kubeconfig's own address, which for a
   // kubeconfig taken from the server (127.0.0.1:6443) is exactly right.
   const [target, setTarget] = useState("");
+  // The hosts in ~/.ssh/config, offered for the SSH host; the only one is filled in.
+  const [hosts, setHosts] = useState<string[]>([]);
+  useEffect(() => {
+    sshHosts().then((h) => { setHosts(h); if (h.length === 1) setSshHost((v) => v || h[0]); },
+      (e) => console.warn("[kube] could not read the SSH hosts", e));
+  }, []);
 
   // A kubeconfig staged and then left (Back, Cancel, the tab closed) is not kept.
   const pending = useRef<string | null>(null);
@@ -75,14 +82,15 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
     setError("");
     try {
       if (ssh) {
-        if (!sshHost.trim() || !/^[^\s:]+:\d+$/.test(target.trim())) {
-          setError("Name the SSH host, and the API server's address on it as host:port.");
+        if (!sshHost.trim()) { setError("Type the SSH host to connect through, or pick one below the field."); return; }
+        if (!/^(\[[^\]]+\]|[^\s:]+):\d+$/.test(target.trim())) {
+          setError("Type the API server's address on the SSH host as host:port, such as 127.0.0.1:6443.");
           return;
         }
         // The certificate is checked against the address the kubeconfig named, not the tunnel's.
         const [cluster, server] = clusters[0];
         const tlsName = (serverHostPort(server)?.host ?? "").replace(/^\[|\]$/g, "");
-        await stageTunnel(staged.file, { cluster, host: sshHost.trim(), target: target.trim() }, tlsName);
+        stageTunnel(staged.file, { cluster, host: sshHost.trim(), target: target.trim(), tlsName });
       } else {
         // Written every time: an SSH attempt before this one has pointed the file at its tunnel.
         unstageTunnel(staged.file);
@@ -129,7 +137,7 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-subtle" style={{ minHeight: 240 }}>
             <YamlEditor value={text} onChange={setText} />
           </div>
-          {error && <Note color={tone("red")}>{error}</Note>}
+          {error && <div style={{ maxWidth: 560 }}><Note flush color={tone("red")}>{error}</Note></div>}
           <div className="flex items-center gap-2">
             <PrimaryButton onClick={() => void next()} disabled={busy || !text.trim()}>{busy ? "Reading…" : "Next"}</PrimaryButton>
             {onCancel && <GhostButton onClick={onCancel}>Cancel</GhostButton>}
@@ -164,9 +172,18 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
             <section className="flex flex-col gap-2" style={{ maxWidth: 560 }}>
               <label className="flex flex-col gap-1 text-[12px] text-text-muted">
                 SSH host
-                <TextInput value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="vps, or user@server" />
-                <span>What you type after ssh in a terminal: a host from your SSH config, or user@address. Your SSH keys
-                  are used; a password cannot be typed here.</span>
+                <TextInput value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="e.g. user@203.0.113.5" />
+                {hosts.length > 0 && (
+                  <span className="flex flex-wrap items-center gap-1">
+                    From your SSH config:
+                    {hosts.map((h) => (
+                      <button key={h} onClick={() => setSshHost(h)}
+                        className="rounded-md px-1.5 py-px font-mono text-text-secondary transition-colors hover:bg-white/5 hover:text-text-primary"
+                        style={h === sshHost.trim() ? { background: "var(--accent-soft)" } : { background: "var(--bg-elev)" }}>{h}</button>
+                    ))}
+                  </span>
+                )}
+                <span>What you type after ssh in a terminal. Your SSH keys are used; a password cannot be typed here.</span>
               </label>
               <label className="flex flex-col gap-1 text-[12px] text-text-muted">
                 API server, as the SSH host reaches it
@@ -187,7 +204,7 @@ export function AddCluster({ onAdded, onCancel, onRecheck }: {
               </div>
             ))}
           </section>}
-          {error && <Note color={tone("red")}>{error}</Note>}
+          {error && <div style={{ maxWidth: 560 }}><Note flush color={tone("red")}>{error}</Note></div>}
           <div className="flex items-center gap-2">
             <PrimaryButton onClick={() => void add(false)} disabled={busy}>{busy ? "Connecting…" : "Add"}</PrimaryButton>
             {failedPing && <GhostButton onClick={() => void add(true)} disabled={busy}>Add anyway</GhostButton>}

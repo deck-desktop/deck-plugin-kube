@@ -3,13 +3,12 @@
 // that outlive the tab and so live here at module scope (stopped by `dispose`).
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
-  configDelete, configRead, configWrite, dataDir, exec, procKill, procStream,
+  configDelete, configRead, configWrite, dataDir, exec, procKill, procStream, sshTunnelClose, sshTunnelOpen,
   type ProcLine, type ProcResult,
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
 import {
-  applyEvent, args, ctxParts, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelBindFailed,
-  tunnelOpen, tunnelPort, tunnelServer,
+  applyEvent, args, ctxParts, forwardedPort, jsonSplitter, parseContexts, parseTop, tunnelGone, tunnelServer,
   type Kind, type KubeConfig, type Obj, type Tunnel, type Usage, type WatchEvent,
 } from "./kube";
 
@@ -30,7 +29,10 @@ async function run(program: string, a: string[]): Promise<string> {
   const file = kubeconfigOf(a);
   if (file) await ensureTunnel(file);
   const out = await exec(program, a);
-  if (out.code !== 0) throw new Error(out.stderr.trim() || out.stdout.trim() || `${program} exited with ${out.code}`);
+  if (out.code !== 0) {
+    if (file && tunnelGone(out.stderr)) closeTunnel(file);
+    throw new Error(out.stderr.trim() || out.stdout.trim() || `${program} exited with ${out.code}`);
+  }
   return out.stdout;
 }
 
@@ -96,7 +98,9 @@ async function stream(id: string, program: string, a: string[], onLine: (l: Proc
     }
     if (stopped.delete(id)) return { id, code: 0, cancelled: true };
   }
-  handlers.set(id, onLine);
+  handlers.set(id, file
+    ? (l) => { if (l.stream === "stderr" && tunnelGone(l.line)) closeTunnel(file); onLine(l); }
+    : onLine);
   return procStream(id, program, a).finally(() => handlers.delete(id));
 }
 
@@ -324,9 +328,10 @@ const fileName = (path: string) => path.slice(path.lastIndexOf("\\") + 1);
 
 // ---- SSH tunnels -----------------------------------------------------------------------------
 //
-// A cluster whose API port is not open to this PC is reached through `ssh -L`, opened the first
-// time a call names its kubeconfig and shared by every call after it. It stays open until Deck
-// exits or the plugin reloads; if it drops, the next call opens it again.
+// A cluster whose API port is not open to this PC is reached through Deck's SSH tunnel, opened the
+// first time a call names its kubeconfig and shared by every call after it. It stays open until
+// Deck exits or the plugin reloads; when it drops, the call that finds it gone closes it, and the
+// next one opens a new one.
 
 /** Tunnels of kubeconfigs being added, not yet in the index. */
 const stagedTunnels = new Map<string, Tunnel>();
@@ -335,7 +340,7 @@ const tunnelFor = (file: string) => index.tunnels[fileName(file)] ?? stagedTunne
 /** The SSH host a cluster added here is reached through, if any. */
 export const tunnelHost = (file: string) => (file ? tunnelFor(file)?.host : undefined);
 
-interface Open { id: string; ready: Promise<void>; failedAt?: number }
+interface Open { id: number | null; ready: Promise<void>; failedAt?: number }
 const open = new Map<string, Open>();
 
 /** The tunnel a context needs, open: for a shell, which kubectl runs in a terminal rather than here. */
@@ -344,61 +349,35 @@ export function ensureContext(key: string): Promise<void> {
   return file ? ensureTunnel(file) : Promise.resolve();
 }
 
-function ensureTunnel(file: string, retried = false): Promise<void> {
+function ensureTunnel(file: string): Promise<void> {
   const t = tunnelFor(file);
   if (!t) return Promise.resolve();
   const cur = open.get(file);
   // A failure is answered for a few seconds rather than retried by every call that was waiting.
   if (cur && !(cur.failedAt && Date.now() - cur.failedAt > 5000)) return cur.ready;
 
-  const id = `kube:tunnel:${++seq}`;
-  let bindFailed = false;
-  let opened = false;
-  let last = "";
-  const entry: Open = { id, ready: Promise.resolve() };
-  entry.ready = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`ssh ${t.host} did not open the tunnel within 20 seconds${last ? `: ${last}` : ""}`));
-      stop(id);
-    }, 20000);
-    stream(id, "ssh", args.tunnel(t), (l) => {
-      if (tunnelOpen(l.line)) { opened = true; clearTimeout(timer); resolve(); return; }
-      if (tunnelBindFailed(l.line)) bindFailed = true;
-      // The last line that is not chatter is what the failure says.
-      if (l.line.trim() && !/^(debug|Authenticated to|Warning: Permanently added)/.test(l.line)) last = l.line.trim();
-    }).then((r) => {
-      clearTimeout(timer);
-      // Dropped after it was open: forget it, so the next call opens a new one.
-      if (opened && open.get(file) === entry) open.delete(file);
-      if (!r.cancelled) console.warn("[kube] ssh tunnel ended", t.host, last);
-      reject(new Error(`ssh ${t.host} failed${last ? `: ${last}` : ` (exit ${r.code})`}`));
-    }, (e) => { clearTimeout(timer); reject(e); });
-  }).catch(async (e: Error) => {
-    // The local port was taken since it was chosen: choose another, once.
-    if (bindFailed && !retried && !opened) {
-      await movePort(file, t);
-      open.delete(file);
-      return ensureTunnel(file, true);
-    }
+  const entry: Open = { id: null, ready: Promise.resolve() };
+  entry.ready = (async () => {
+    const [id, port] = await sshTunnelOpen(t.host, t.target);
+    // Closed while it opened (the tab, a Back): nobody is left to use it.
+    if (open.get(file) !== entry) { void sshTunnelClose(id).catch(() => {}); return; }
+    entry.id = id;
+    // Deck picks a free port for each tunnel, so the kubeconfig follows it.
+    await run("kubectl", args.setServer(file, t.cluster, tunnelServer(port), t.tlsName));
+  })().catch((e) => {
     entry.failedAt = Date.now();
-    throw e;
+    console.warn("[kube] ssh tunnel failed", t.host, e);
+    throw new Error(`SSH to ${t.host} failed: ${String((e as Error).message ?? e)}`);
   });
   open.set(file, entry);
   return entry.ready;
 }
 
-/** Points a tunnel, and its kubeconfig, at a new local port. */
-async function movePort(file: string, t: Tunnel) {
-  const moved = { ...t, port: tunnelPort() };
-  await run("kubectl", args.setServer(file, t.cluster, tunnelServer(moved.port)));
-  const name = fileName(file);
-  if (index.tunnels[name]) await writeIndex({ ...index, tunnels: { ...index.tunnels, [name]: moved } });
-  else stagedTunnels.set(name, moved);
-}
-
 function closeTunnel(file: string) {
   const o = open.get(file);
-  if (o) { open.delete(file); stop(o.id); }
+  if (!o) return;
+  open.delete(file);
+  if (o.id !== null) void sshTunnelClose(o.id).catch(() => { /* already gone */ });
 }
 
 /** Drops the tunnel of a kubeconfig being added, which is to be reached directly after all. */
@@ -407,15 +386,10 @@ export function unstageTunnel(file: string) {
   stagedTunnels.delete(fileName(file));
 }
 
-/**
- * Makes a kubeconfig being added reach its cluster through SSH: its server becomes the tunnel's
- * local end, with the original host as the TLS server name.
- */
-export async function stageTunnel(file: string, t: Omit<Tunnel, "port">, tlsName: string) {
+/** Makes a kubeconfig being added reach its cluster through SSH, from its next call on. */
+export function stageTunnel(file: string, t: Tunnel) {
   closeTunnel(file);
-  const tunnel = { ...t, port: tunnelPort() };
-  await run("kubectl", args.setServer(file, t.cluster, tunnelServer(tunnel.port), tlsName));
-  stagedTunnels.set(fileName(file), tunnel);
+  stagedTunnels.set(fileName(file), t);
 }
 
 /** Every context: the user's own kubeconfig's, then those of the kubeconfigs added here. */
@@ -504,8 +478,7 @@ export function savePrefs(p: Prefs) {
 export function stopAll() {
   unlisten.then((f) => f()).catch(() => {});
   for (const f of forwards) stop(f.id);
-  for (const o of open.values()) stop(o.id);
+  for (const file of [...open.keys()]) closeTunnel(file);
   forwards = [];
-  open.clear();
   handlers.clear();
 }

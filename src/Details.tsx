@@ -73,10 +73,15 @@ function Conditions({ o }: { o: Obj }) {
 }
 
 /** A command's output or error, in a box under a toolbar. */
-export function Note({ color, children }: { color?: string; children: React.ReactNode }) {
+export function Note({ color, flush, children }: {
+  color?: string;
+  /** In a form's own column rather than under a toolbar: no margin of its own. */
+  flush?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="whitespace-pre-wrap rounded-lg border border-subtle bg-elev px-3 py-2 font-mono text-[11.5px]"
-      style={{ margin: "0 12px 8px", color: color ?? "var(--text-secondary)" }}>{children}</div>
+      style={{ margin: flush ? 0 : "0 12px 8px", color: color ?? "var(--text-secondary)" }}>{children}</div>
   );
 }
 
