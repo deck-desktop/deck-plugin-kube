@@ -4,12 +4,13 @@
 //
 // Everything goes through kubectl (and helm), which Deck runs: `kubectl get --watch` for the
 // tables, `exec` for the rest. So it talks to whatever the user's kubeconfig talks to, with the
-// same authentication, and the context chosen here is passed with --context on every call rather
-// than switched in the kubeconfig, which the user's terminals keep reading.
+// same authentication, plus any cluster added here by pasting its kubeconfig (src/Clusters.tsx).
+// The context chosen here is passed with --context on every call rather than switched in the
+// kubeconfig, which the user's terminals keep reading.
 import { useEffect, useMemo, useState } from "react";
 import {
   ShipWheel, Plus, ChevronRight, ChevronDown, LayoutDashboard, Package, ArrowRightLeft,
-  ExternalLink, Square, Search, TerminalSquare, ScrollText,
+  ExternalLink, Square, Search, TerminalSquare, ScrollText, Trash2,
 } from "lucide-react";
 import {
   ConfirmDialog, type ConfirmState, ContextMenu, type MenuEntry, NamePrompt, type NamePromptState,
@@ -18,13 +19,14 @@ import {
 import { openExternal } from "deck-plugin-sdk/bridge";
 import {
   KINDS, age, allocatable, args, crdKinds, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
-  parseContexts, parsePorts, podPorts, podSummary, requested, shellCommand,
+  parsePorts, podPorts, podSummary, requested, shellCommand,
   type Kind, type Obj, type Usage,
 } from "./kube";
 import {
-  installed, kubectl, kubectlJson, loadPrefs, savePrefs, startForward, stopAll, stopForward,
-  useForwards, useMetrics, useWatch, type Prefs,
+  discardKubeconfig, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs, startForward,
+  stopAll, stopForward, useForwards, useMetrics, useWatch, type Context, type Prefs,
 } from "./run";
+import { AddCluster } from "./Clusters";
 import { Details, CreatePanel, Note, StatusChip, actionsFor, type Act } from "./Details";
 import { HelmView } from "./Helm";
 
@@ -32,9 +34,7 @@ export function dispose() {
   stopAll();
 }
 
-type View = { type: "overview" } | { type: "kind"; resource: string } | { type: "helm" } | { type: "forwards" };
-
-interface Context { name: string; cluster: string; namespace: string }
+type View = { type: "overview" } | { type: "kind"; resource: string } | { type: "helm" } | { type: "forwards" } | { type: "add" };
 
 const NS_KIND = kindByResource("namespaces")!;
 
@@ -48,8 +48,11 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
   const [filter, setFilter] = useState("");
   const [crds, setCrds] = useState<Kind[]>([]);
   const [reload, setReload] = useState(0);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  // A cluster just added: chosen once the contexts are read again.
+  const [choose, setChoose] = useState("");
 
-  // kubectl, the contexts in the kubeconfig, and the choices made here last time.
+  // kubectl, the contexts in the kubeconfigs, and the choices made here last time.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -57,20 +60,19 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
       if (!alive) return;
       setHasKubectl(has);
       if (!has) return;
-      const [cfg, p] = await Promise.all([
-        kubectlJson<Parameters<typeof parseContexts>[0]>(args.contexts()).catch((e) => {
-          console.warn("[kube] could not read the kubeconfig", e);
-          return {};
-        }),
-        loadPrefs(),
-      ]);
+      const [{ current, contexts: list }, p] = await Promise.all([loadContexts(), loadPrefs()]);
       if (!alive) return;
-      const { current, contexts: list } = parseContexts(cfg);
       setContexts(list);
       setPrefs(p);
-      const chosen = list.find((c) => c.name === p.context)?.name ?? current ?? list[0]?.name ?? "";
+      const known = (k: string) => list.some((c) => c.key === k);
+      const chosen = [choose, p.context, current].find((k) => k && known(k)) ?? list[0]?.key ?? "";
       setContext(chosen);
-      setNs(p.namespaces[chosen] ?? list.find((c) => c.name === chosen)?.namespace ?? "");
+      setNs(p.namespaces[chosen] ?? list.find((c) => c.key === chosen)?.namespace ?? "");
+      if (choose) {
+        setChoose("");
+        setView({ type: "overview" });
+        if (known(choose)) savePrefs({ ...p, context: choose });
+      }
     })();
     return () => { alive = false; };
   }, [reload]);
@@ -87,12 +89,19 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
 
   const pickContext = (c: string) => {
     setContext(c);
-    const next = prefs?.namespaces[c] ?? contexts?.find((x) => x.name === c)?.namespace ?? "";
+    const next = prefs?.namespaces[c] ?? contexts?.find((x) => x.key === c)?.namespace ?? "";
     setNs(next);
     const p = { context: c, namespaces: { ...(prefs?.namespaces ?? {}) } };
     setPrefs(p);
     savePrefs(p);
   };
+  const added = (key: string) => { setChoose(key); setReload((r) => r + 1); };
+  const remove = (c: Context) => setConfirm({
+    title: `Remove ${c.name}?`, confirmLabel: "Remove",
+    body: "Its kubeconfig, added here, is deleted. The cluster itself is not touched.",
+    onConfirm: () => void discardKubeconfig(c.file).then(() => setReload((r) => r + 1)),
+  });
+
   const pickNs = (n: string) => {
     setNs(n);
     const p = { context, namespaces: { ...(prefs?.namespaces ?? {}), [context]: n } };
@@ -114,17 +123,7 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
     );
   }
   if (!contexts) return <Centered><span className="text-[12px] text-text-muted">Reading your kubeconfig…</span></Centered>;
-  if (!contexts.length) {
-    return (
-      <Centered>
-        <EmptyState card icon={<ShipWheel />} title="No clusters yet"
-          action={{ label: "Check again", onClick: () => setReload(reload + 1) }}>
-          Your kubeconfig names no cluster. Turn on Kubernetes in Docker Desktop (Settings, Kubernetes),
-          or add a cluster's kubeconfig to %USERPROFILE%\.kube\config.
-        </EmptyState>
-      </Centered>
-    );
-  }
+  if (!contexts.length) return <div className="flex h-full min-h-0 flex-col"><AddCluster onAdded={added} /></div>;
 
   const kind = view.type === "kind" ? kindByResource(view.resource, crds) : undefined;
 
@@ -132,9 +131,10 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
     <div className="flex h-full min-h-0 text-[12.5px]">
       <Sidebar contexts={contexts} context={context} onContext={pickContext}
         namespaces={namespaces.rows.map((o) => o.metadata.name).sort()} ns={ns} onNs={pickNs}
-        view={view} onView={(v) => { setView(v); setFilter(""); }} crds={crds} />
+        view={view} onView={(v) => { setView(v); setFilter(""); }} crds={crds} onRemove={remove} />
       <div className="flex min-w-0 flex-1 flex-col">
-        {namespaces.error && (
+        {view.type === "add" && <AddCluster onAdded={added} onCancel={() => setView({ type: "overview" })} />}
+        {namespaces.error && view.type !== "add" && (
           <div className="pt-3"><Note color={tone("red")}>{namespaces.error}</Note></div>
         )}
         {view.type === "overview" && <ClusterOverview context={context} ns={ns} onView={setView} />}
@@ -150,6 +150,7 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
           </>
         )}
       </div>
+      <ConfirmDialog state={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
 }
@@ -160,11 +161,15 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 // ---- sidebar ---------------------------------------------------------------------------------
 
-function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onView, crds }: {
+function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onView, crds, onRemove }: {
   contexts: Context[]; context: string; onContext: (c: string) => void;
   namespaces: string[]; ns: string; onNs: (n: string) => void;
-  view: View; onView: (v: View) => void; crds: Kind[];
+  view: View; onView: (v: View) => void; crds: Kind[]; onRemove: (c: Context) => void;
 }) {
+  const current = contexts.find((c) => c.key === context);
+  const own = contexts.filter((c) => !c.file);
+  const added = contexts.filter((c) => c.file);
+  const option = (c: Context) => <option key={c.key} value={c.key}>{c.name}</option>;
   const [folded, setFolded] = useState<Record<string, boolean>>({ "Access control": true });
   const forwards = useForwards();
   const groups = useMemo(() => {
@@ -183,9 +188,16 @@ function Sidebar({ contexts, context, onContext, namespaces, ns, onNs, view, onV
   return (
     <nav className="flex shrink-0 flex-col gap-2 overflow-auto border-r border-subtle bg-panel px-2 py-2" style={{ width: 210 }}>
       <div className="flex flex-col gap-1.5">
-        <Select value={context} onChange={(e) => onContext(e.target.value)} title="Cluster (kubeconfig context)">
-          {contexts.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-        </Select>
+        <div className="flex items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <Select value={context} onChange={(e) => onContext(e.target.value)} title={current?.server || "Cluster"}>
+              {own.length > 0 && added.length > 0 ? <optgroup label="Your kubeconfig">{own.map(option)}</optgroup> : own.map(option)}
+              {added.length > 0 && (own.length > 0 ? <optgroup label="Added here">{added.map(option)}</optgroup> : added.map(option))}
+            </Select>
+          </div>
+          {current?.file && <IconButton title="Remove this cluster" danger onClick={() => onRemove(current)}><Trash2 size={13} /></IconButton>}
+          <IconButton title="Add a cluster" active={view.type === "add"} onClick={() => onView({ type: "add" })}><Plus size={14} /></IconButton>
+        </div>
         <Select value={ns} onChange={(e) => onNs(e.target.value)} title="Namespace">
           <option value="">All namespaces</option>
           {!namespaces.includes(ns) && ns && <option value={ns}>{ns}</option>}

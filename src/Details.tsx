@@ -229,10 +229,7 @@ function EventsTab({ context, o }: { context: string; o: Obj }) {
   const [events, setEvents] = useState<Obj[] | null>(null);
   useEffect(() => {
     let alive = true;
-    const sel = `involvedObject.uid=${o.metadata.uid}`;
-    const a = ["get", "events", ...(o.metadata.namespace ? ["-n", o.metadata.namespace] : ["-A"]),
-      "--field-selector", sel, "-o", "json", ...(context ? ["--context", context] : [])];
-    kubectlJson(a).then((l) => {
+    kubectlJson(args.events(context, o.metadata.namespace, o.metadata.uid ?? "")).then((l) => {
       if (alive) setEvents(l.items.sort((x, y) => Date.parse(eventTime(y) ?? "") - Date.parse(eventTime(x) ?? "")));
     }, (e) => { console.warn("[kube] could not read events", e); if (alive) setEvents([]); });
     return () => { alive = false; };

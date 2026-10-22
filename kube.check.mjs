@@ -200,7 +200,6 @@ assert.deepEqual(k.args.watch("docker-desktop", pods, ""),
 assert.deepEqual(k.args.watch("c", pods, "kube-system").slice(0, 4), ["get", "pods", "-n", "kube-system"]);
 assert.ok(!k.args.watch("c", nodes, "kube-system").includes("-n"), "a cluster-wide kind takes no namespace");
 assert.ok(!k.args.watch("c", nodes, "").includes("-A"));
-assert.deepEqual(k.args.contexts(), ["config", "view", "-o", "json"]);
 for (const [name, a] of Object.entries({
   delete: k.args.delete("c", "pods", "p", "ns"),
   scale: k.args.scale("c", "deployments", "d", "ns", 2),
@@ -226,6 +225,43 @@ assert.equal(
 );
 assert.ok(!k.shellCommand("", "p", "ns", "c").includes("--context"));
 
+// ---- clusters added here -------------------------------------------------------------------
+const file = "C:\\Users\\me\\AppData\\Roaming\\Deck\\data\\kube\\kubeconfigs\\a b.yaml";
+const added = k.ctxKey("default", file);
+assert.deepEqual(k.ctxParts(added), { file, name: "default" });
+assert.deepEqual(k.ctxParts("docker-desktop"), { file: "", name: "docker-desktop" }, "a plain name is the user's own kubeconfig");
+assert.deepEqual(k.ctxParts(k.ctxKey("odd|name", "C:\\f.yaml")), { file: "C:\\f.yaml", name: "odd|name" }, "a | in the context's name survives");
+assert.equal(k.ctxKey("x"), "x");
+assert.deepEqual(k.args.delete(added, "pods", "p", "ns").slice(-4), ["--kubeconfig", file, "--context", "default"],
+  "an added cluster names its kubeconfig on every call");
+assert.deepEqual(k.helmArgs.list(added, "").slice(-4), ["--kubeconfig", file, "--kube-context", "default"]);
+assert.ok(k.shellCommand(added, "p", "ns", "c").startsWith(`kubectl --kubeconfig "${file}" --context default exec`),
+  "a path with spaces is quoted for the terminal");
+assert.deepEqual(k.args.contexts("C:\\f.yaml"), ["config", "view", "-o", "json", "--kubeconfig", "C:\\f.yaml"]);
+assert.deepEqual(k.args.contexts(), ["config", "view", "-o", "json"]);
+assert.deepEqual(k.args.ping("c"), ["version", "-o", "json", "--request-timeout=8s", "--context", "c"]);
+
+assert.ok(k.isLocalServer("https://127.0.0.1:6443"));
+assert.ok(k.isLocalServer("https://localhost:6443"));
+assert.ok(k.isLocalServer("https://0.0.0.0:6443"));
+assert.ok(k.isLocalServer("https://[::1]:6443"));
+assert.ok(!k.isLocalServer("https://203.0.113.5:6443"));
+assert.ok(!k.isLocalServer("https://k8s.example.com"));
+assert.ok(!k.isLocalServer("https://localhost.example.com:6443"), "only the name itself is local");
+assert.equal(k.serverOn("https://127.0.0.1:6443", "203.0.113.5"), "https://203.0.113.5:6443");
+assert.equal(k.serverOn("https://localhost:6443/api", "https://k8s.example.com/"), "https://k8s.example.com:6443/api",
+  "a scheme or a slash typed with the host is dropped");
+assert.equal(k.serverOn("https://[::1]:6443", "vps.example.com"), "https://vps.example.com:6443");
+
+const fromFile = k.parseContexts({
+  "current-context": "default",
+  contexts: [{ name: "default", context: { cluster: "k3s", namespace: "apps" } }],
+  clusters: [{ name: "k3s", cluster: { server: "https://127.0.0.1:6443" } }],
+}, "C:\\f.yaml");
+assert.equal(fromFile.current, "C:\\f.yaml|default");
+assert.deepEqual(fromFile.contexts[0],
+  { key: "C:\\f.yaml|default", name: "default", file: "C:\\f.yaml", cluster: "k3s", server: "https://127.0.0.1:6443", namespace: "apps" });
+
 assert.deepEqual(k.helmArgs.list("c", ""), ["list", "-A", "-o", "json", "--kube-context", "c"]);
 assert.deepEqual(k.helmArgs.rollback("", "r", "ns", 3), ["rollback", "r", "3", "-n", "ns", "--wait=false"]);
 assert.equal(k.helmTime("2026-10-22 10:01:02.123456 +0200 CEST"), "2026-10-22T10:01:02+02:00");
@@ -234,7 +270,7 @@ assert.ok(!Number.isNaN(Date.parse(k.helmTime("2026-10-22 10:01:02.123456 +0000 
 // ---- other output ------------------------------------------------------------------------------
 const ctxs = k.parseContexts({ "current-context": "b", contexts: [{ name: "a", context: { cluster: "ca" } }, { name: "b", context: { cluster: "cb", namespace: "dev" } }] });
 assert.equal(ctxs.current, "b");
-assert.deepEqual(ctxs.contexts[1], { name: "b", cluster: "cb", namespace: "dev" });
+assert.deepEqual(ctxs.contexts[1], { key: "b", name: "b", file: "", cluster: "cb", server: "", namespace: "dev" });
 assert.deepEqual(k.parseContexts({}), { current: "", contexts: [] });
 
 const topPods = k.parseTop("kube-system   coredns-1   3m   12Mi\ndefault web 250m 1Gi\n\n", false);

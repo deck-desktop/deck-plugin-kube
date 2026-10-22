@@ -8,8 +8,8 @@ import {
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
 import {
-  applyEvent, args, forwardedPort, jsonSplitter, parseTop,
-  type Kind, type Obj, type Usage, type WatchEvent,
+  applyEvent, args, forwardedPort, jsonSplitter, parseContexts, parseTop,
+  type Kind, type KubeConfig, type Obj, type Usage, type WatchEvent,
 } from "./kube";
 
 // ---- one-shot calls --------------------------------------------------------------------------
@@ -248,6 +248,68 @@ export function stopForward(id: string) {
   forwards = forwards.filter((f) => f.id !== id);
   emit();
   void procKill(id).catch(() => {});
+}
+
+// ---- clusters --------------------------------------------------------------------------------
+
+export type Context = ReturnType<typeof parseContexts>["contexts"][number];
+
+/**
+ * Kubeconfigs added in this tool, as Lens keeps them: each one a file in the plugin's own folder,
+ * named in the `clusters` config, and passed to kubectl with --kubeconfig. The user's own
+ * kubeconfig is read as well and never written.
+ */
+async function addedNames(): Promise<string[]> {
+  const raw = await configRead("clusters").catch((e) => { console.warn("[kube] could not read the added clusters", e); return ""; });
+  try { return raw.trim() ? (JSON.parse(raw).files ?? []) : []; } catch { return []; }
+}
+
+const saveNames = (files: string[]) => configWrite("clusters", JSON.stringify({ files }));
+const fileName = (path: string) => path.slice(path.lastIndexOf("\\") + 1);
+
+/** Every context: the user's own kubeconfig's, then those of the kubeconfigs added here. */
+export async function loadContexts(): Promise<{ current: string; contexts: Context[] }> {
+  const own = parseContexts(await kubectlJson<KubeConfig>(args.contexts()).catch((e) => {
+    console.warn("[kube] could not read the kubeconfig", e);
+    return {};
+  }));
+  const dir = await dataDir();
+  const added = await Promise.all((await addedNames()).map((n) => {
+    const file = `${dir}\\${n}`;
+    return kubectlJson<KubeConfig>(args.contexts(file)).then((c) => parseContexts(c, file).contexts, (e) => {
+      console.warn("[kube] could not read an added kubeconfig", file, e);
+      return [];
+    });
+  }));
+  return { current: own.current, contexts: [...own.contexts, ...added.flat()] };
+}
+
+/** Writes a pasted kubeconfig to a file of its own, not yet listed: its path and what it names. */
+export async function stageKubeconfig(text: string): Promise<{ file: string; contexts: Context[] }> {
+  const name = `kubeconfig-${Date.now().toString(36)}.yaml`;
+  await configWrite(name, text);
+  const file = `${await dataDir()}\\${name}`;
+  try {
+    const { contexts } = parseContexts(await kubectlJson<KubeConfig>(args.contexts(file)), file);
+    if (!contexts.length) throw new Error("This kubeconfig names no context.");
+    return { file, contexts };
+  } catch (e) {
+    await discardKubeconfig(file);
+    throw e;
+  }
+}
+
+/** Lists a staged kubeconfig, so it is read from now on. */
+export async function keepKubeconfig(file: string) {
+  const names = await addedNames();
+  if (!names.includes(fileName(file))) await saveNames([...names, fileName(file)]);
+}
+
+/** Removes an added kubeconfig: from the list, and its file. */
+export async function discardKubeconfig(file: string) {
+  const names = await addedNames();
+  if (names.includes(fileName(file))) await saveNames(names.filter((n) => n !== fileName(file)));
+  await configDelete(fileName(file)).catch((e) => console.warn("[kube] could not remove a kubeconfig", file, e));
 }
 
 // ---- remembered choices ------------------------------------------------------------------------

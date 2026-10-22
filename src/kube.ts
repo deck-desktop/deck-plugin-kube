@@ -566,14 +566,44 @@ export function applyEvent(rows: Map<string, Obj>, ev: WatchEvent): boolean {
   return true;
 }
 
-/** `kubectl config view -o json`, reduced to the contexts and which one is current. */
-export function parseContexts(cfg: { contexts?: { name: string; context?: { cluster?: string; namespace?: string; user?: string } }[]; "current-context"?: string }) {
+export interface KubeConfig {
+  contexts?: { name: string; context?: { cluster?: string; namespace?: string; user?: string } }[];
+  clusters?: { name: string; cluster?: { server?: string } }[];
+  "current-context"?: string;
+}
+
+/**
+ * `kubectl config view -o json`, reduced to the contexts, the server each one talks to, and which
+ * one is current. `file` is the kubeconfig it was read from when it is not the user's own, and
+ * becomes part of each context's key.
+ */
+export function parseContexts(cfg: KubeConfig, file = "") {
+  const servers = new Map((cfg.clusters ?? []).map((c) => [c.name, c.cluster?.server ?? ""]));
   return {
-    current: cfg["current-context"] ?? "",
+    current: cfg["current-context"] ? ctxKey(cfg["current-context"], file) : "",
     contexts: (cfg.contexts ?? []).map((c) => ({
-      name: c.name, cluster: c.context?.cluster ?? "", namespace: c.context?.namespace ?? "",
+      key: ctxKey(c.name, file),
+      name: c.name,
+      file,
+      cluster: c.context?.cluster ?? "",
+      server: servers.get(c.context?.cluster ?? "") ?? "",
+      namespace: c.context?.namespace ?? "",
     })),
   };
+}
+
+/**
+ * A server address that only means something on the server itself: what k3s and kubeadm write
+ * into the kubeconfig they leave there. From this PC it has to be the server's own address.
+ */
+export const isLocalServer = (server: string) =>
+  /^https?:\/\/(127\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1?\])(:|\/|$)/i.test(server.trim());
+
+/** The address a local server address should become: the same scheme and port on `host`. */
+export function serverOn(server: string, host: string): string {
+  const m = /^(https?:\/\/)(?:\[[^\]]*\]|[^:/]+)(.*)$/i.exec(server.trim());
+  const h = host.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  return m ? `${m[1]}${h}${m[2]}` : server;
 }
 
 export interface Usage { cpu: number; memory: number }
@@ -629,16 +659,38 @@ export function decodeSecret(b64: string): { text: string; binary: boolean } {
 // ---- kubectl's arguments -------------------------------------------------------------------------
 
 /**
- * The context goes on every call with `--context`, never through `kubectl config use-context`:
- * choosing a cluster here must not change which one the user's own terminals talk to.
+ * A context, as one string: its name for one in the user's own kubeconfig, `<file>|<name>` for
+ * one in a kubeconfig added here. One string so it can be a React dependency and a saved choice
+ * as it is. A Windows path cannot hold a `|`, so the first one is always the separator.
  */
-const ctx = (context: string) => (context ? ["--context", context] : []);
+export const ctxKey = (name: string, file = "") => (file ? `${file}|${name}` : name);
+
+export function ctxParts(key: string): { file: string; name: string } {
+  const i = key.indexOf("|");
+  return i < 0 ? { file: "", name: key } : { file: key.slice(0, i), name: key.slice(i + 1) };
+}
+
+/**
+ * The context goes on every call with `--context`, never through `kubectl config use-context`:
+ * choosing a cluster here must not change which one the user's own terminals talk to. A cluster
+ * added here also names its own kubeconfig with `--kubeconfig`.
+ */
+function ctx(key: string, flag = "--context") {
+  const { file, name } = ctxParts(key);
+  return [...(file ? ["--kubeconfig", file] : []), ...(name ? [flag, name] : [])];
+}
 
 /** `-n <ns>` for a namespaced kind in one namespace, `-A` for all of them, nothing otherwise. */
 const scope = (namespaced: boolean, ns: string) => (!namespaced ? [] : ns ? ["-n", ns] : ["-A"]);
 
 export const args = {
-  contexts: () => ["config", "view", "-o", "json"],
+  contexts: (file = "") => ["config", "view", "-o", "json", ...(file ? ["--kubeconfig", file] : [])],
+  setServer: (file: string, cluster: string, server: string) =>
+    ["config", "set-cluster", cluster, `--server=${server}`, "--kubeconfig", file],
+  /** Whether the cluster answers: the server's version, waiting at most a few seconds. */
+  ping: (c: string) => ["version", "-o", "json", "--request-timeout=8s", ...ctx(c)],
+  events: (c: string, ns: string | undefined, uid: string) =>
+    ["get", "events", ...(ns ? ["-n", ns] : ["-A"]), "--field-selector", `involvedObject.uid=${uid}`, "-o", "json", ...ctx(c)],
   namespaces: (c: string) => ["get", "namespaces", "-o", "json", ...ctx(c)],
   crds: (c: string) => ["get", "customresourcedefinitions", "-o", "json", ...ctx(c)],
   /** The rows of a kind: the list first, as ADDED events, then every change, until killed. */
@@ -700,7 +752,7 @@ export interface Revision {
   revision: number; updated: string; status: string; chart: string; app_version: string; description: string;
 }
 
-const kctx = (c: string) => (c ? ["--kube-context", c] : []);
+const kctx = (c: string) => ctx(c, "--kube-context");
 
 export const helmArgs = {
   list: (c: string, ns: string) => ["list", ...(ns ? ["-n", ns] : ["-A"]), "-o", "json", ...kctx(c)],
