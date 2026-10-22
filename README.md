@@ -34,8 +34,11 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
   the kubeconfig it came with: k3s leaves it at `/etc/rancher/k3s/k3s.yaml`, kubeadm at
   `/etc/kubernetes/admin.conf`, and a hosted provider offers it for download. It is kept in the
   plugin's own folder, and your own kubeconfig is not changed. When the pasted file points at
-  127.0.0.1 (as k3s's does), you are asked for the server's real address. This PC has to reach
-  the cluster's API port, usually 6443.
+  127.0.0.1 (as k3s's does), you are asked for the server's real address.
+- **A way to reach it.** Either this PC reaches the cluster's API port (usually 6443) directly, or
+  you pick **Through SSH** when adding it and name the SSH host (an alias from your SSH config, or
+  `user@server`). The tunnel opens when you first use the cluster and closes when Deck exits. It
+  uses your SSH keys; a password prompt cannot be answered from here.
 - **helm**, for the Helm view only.
 - **metrics-server** in the cluster, for CPU and memory in use only.
 
