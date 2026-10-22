@@ -1,0 +1,22 @@
+{
+  "name": "deck-plugin-kube",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "deck-plugin build",
+    "dev": "deck-plugin dev",
+    "install-local": "deck-plugin install",
+    "test": "node kube.check.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@types/node": "^26.5.1",
+    "@types/react": "^19.3.0",
+    "deck-plugin-sdk": "^1.10.0",
+    "esbuild": "^0.28.2",
+    "lucide-react": "^1.58.0",
+    "react": "^19.3.1",
+    "typescript": "~5.8.3"
+  }
+}

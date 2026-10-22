@@ -1,0 +1,4 @@
+node_modules/
+# What the build writes. A release carries plugin.json and these; the repository holds the source.
+plugin.js
+mcp.js
