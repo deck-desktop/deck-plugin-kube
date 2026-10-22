@@ -113,7 +113,7 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
       </Centered>
     );
   }
-  if (!contexts) return null;
+  if (!contexts) return <Centered><span className="text-[12px] text-text-muted">Reading your kubeconfig…</span></Centered>;
   if (!contexts.length) {
     return (
       <Centered>
@@ -145,7 +145,7 @@ export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label
               filter={filter} onFilter={setFilter} />
             {view.type === "helm"
               ? <HelmView context={context} namespace={ns} filter={filter} runInTerminal={runInTerminal} />
-              : kind && <ResourceView key={`${context}/${kind.resource}`} context={context} kind={kind} ns={ns}
+              : kind && <ResourceView key={`${context}/${kind.resource}/${ns}`} context={context} kind={kind} ns={ns}
                   filter={filter} runInTerminal={runInTerminal} />}
           </>
         )}

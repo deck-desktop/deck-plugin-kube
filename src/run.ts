@@ -1,7 +1,7 @@
 // Running kubectl and helm from Deck: one-shot calls through `exec`, live rows through a
 // `kubectl get --watch` stream, metrics on a poll, and port-forwards, the one thing that outlives
 // the tab and so lives here at module scope (stopped by `dispose`).
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   configDelete, configRead, configWrite, dataDir, exec, procKill, procStream,
   type ProcLine, type ProcResult,
@@ -25,9 +25,12 @@ export const kubectl = (a: string[]) => run("kubectl", a);
 export const helm = (a: string[]) => run("helm", a);
 export const kubectlJson = async <T = { items: Obj[] }>(a: string[]) => JSON.parse(await kubectl(a)) as T;
 
-/** Whether a program is there at all: cmd.exe reports a missing one as "not recognized". */
+/**
+ * Whether a program is there at all: cmd.exe reports a missing one as "not recognized". Asks for
+ * the client's version only, since kubectl's plain `version` waits on the cluster.
+ */
 export async function installed(program: string): Promise<boolean> {
-  const out = await exec(program, ["version"]).catch(() => null);
+  const out = await exec(program, program === "kubectl" ? ["version", "--client"] : ["version"]).catch(() => null);
   return !!out && !/is not recognized|cannot find|not found/i.test(out.stderr);
 }
 
@@ -270,13 +273,6 @@ export function savePrefs(p: Prefs) {
   if (text === lastPrefs) return;
   lastPrefs = text;
   configWrite("prefs", text).catch((e) => console.warn("[kube] could not save prefs", e));
-}
-
-/** The latest value of something, for a callback made once. */
-export function useLatest<T>(v: T) {
-  const r = useRef(v);
-  r.current = v;
-  return r;
 }
 
 /** Stops what module scope started: the stream listener and every port-forward. */
