@@ -20,7 +20,7 @@ import { configRead, openExternal } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
 import {
   KINDS, age, allocatable, args, crdKinds, ctxParts, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
-  parsePorts, podPorts, podSummary, requested, shellCommand,
+  debugCommand, noShell, parsePorts, podPorts, podSummary, requested, shellCommand,
   type Kind, type Obj, type Usage,
 } from "./kube";
 import {
@@ -376,12 +376,26 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
       case "logs":
         setPanel({ type: "details", key: objKey(o), logs: { container: c, n: Date.now() } });
         break;
-      case "shell":
+      case "shell": {
+        const label = `${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`;
         // The terminal's kubectl goes through the cluster's SSH tunnel too, so it is opened first.
-        ensureContext(context).then(
-          () => runInTerminal(`${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`, shellCommand(context, name, n, c)),
-          fail("Shell"));
+        // Then a quiet exec asks whether the container has a shell: one without (a distroless
+        // image) would only show kubectl's error, so a shell in a debug container is offered
+        // instead. Any other failure (the pod not running) is the terminal's to show.
+        ensureContext(context)
+          .then(() => kubectl(args.hasShell(context, name, n, c)).then(() => true, (e: Error) => !noShell(String(e.message ?? e))))
+          .then((has) => {
+            if (has) { runInTerminal(label, shellCommand(context, name, n, c)); return; }
+            setConfirm({
+              title: `${c} has no shell`,
+              body: `Its image holds only its own program, so there is nothing to log into. Debug with busybox adds a temporary busybox container to ${name}, which sees ${c}'s processes (its files are under /proc/1/root), and opens a shell in it. That container stays in the pod until the pod is replaced.`,
+              confirmLabel: "Debug with busybox",
+              danger: false,
+              onConfirm: () => runInTerminal(`${label} (debug)`, debugCommand(context, name, n, c)),
+            });
+          }, fail("Shell"));
         break;
+      }
       case "forward": {
         const target = `${kind.kind === "Service" ? "svc" : "pod"}/${name}`;
         // kubectl port-forward carries TCP only, so the first TCP port is the one to suggest
