@@ -850,10 +850,11 @@ export function shellCommand(c: string, pod: string, ns: string, container: stri
  * A shell beside a container that has none: `kubectl debug` adds a busybox ephemeral container
  * to the pod, in the container's process namespace (`--target`), so its processes are visible
  * and its files are under /proc/1/root. The ephemeral container stays in the pod until the pod is
- * replaced; Kubernetes has no way to remove one.
+ * replaced; Kubernetes has no way to remove one. `--profile=general` is what kubectl now asks for
+ * (the default, "legacy", is deprecated and warns); it needs kubectl 1.27 or later.
  */
 export function debugCommand(c: string, pod: string, ns: string, container: string): string {
-  return ["kubectl", ...ctx(c), "debug", "-it", "-n", ns, pod, "--image=busybox", `--target=${container}`].map(q).join(" ");
+  return ["kubectl", ...ctx(c), "debug", "-it", "-n", ns, pod, "--image=busybox", `--target=${container}`, "--profile=general"].map(q).join(" ");
 }
 
 // ---- helm ------------------------------------------------------------------------------------
