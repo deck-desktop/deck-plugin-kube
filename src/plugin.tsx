@@ -16,7 +16,8 @@ import {
   ConfirmDialog, type ConfirmState, ContextMenu, type MenuEntry, NamePrompt, type NamePromptState,
   EmptyState, IconButton, Select, CountChip, Chip, tone, notify,
 } from "deck-plugin-sdk/ui";
-import { openExternal } from "deck-plugin-sdk/bridge";
+import { configRead, openExternal } from "deck-plugin-sdk/bridge";
+import { listen } from "deck-plugin-sdk/event";
 import {
   KINDS, age, allocatable, args, crdKinds, ctxParts, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
   parsePorts, podPorts, podSummary, requested, shellCommand,
@@ -34,11 +35,42 @@ export function dispose() {
   stopAll();
 }
 
+/**
+ * Kubernetes' row in Settings → Where things open: its terminals (a pod's Shell, installing kubectl
+ * or Helm) as a tab beside its own, or in a floating window. Deck writes the choice to this
+ * plugin's `settings` config.
+ */
+export const settings = [{
+  in: "where-things-open", key: "terminalsIn", title: "Terminals from Kubernetes",
+  desc: "A pod's Shell, and installing kubectl or Helm. As a tab, beside Kubernetes' own.",
+  choices: [["float", "Floating window"], ["tab", "Tab"]], default: "tab",
+}];
+
+/** Whether this plugin's terminals open in a floating window: its setting, kept current. */
+function useFloatTerminals(): boolean {
+  const [float, setFloat] = useState(false);
+  useEffect(() => {
+    const read = () => configRead("settings")
+      .then((t) => setFloat(!!t.trim() && JSON.parse(t).terminalsIn === "float"))
+      .catch((e) => console.warn("[kube] settings load failed", e));
+    void read();
+    // config-changed names the file in full: this plugin's configs live in data/kube/.
+    const un = listen<string[]>("config-changed", (e) => { if (e.payload.includes("data/kube/settings")) void read(); });
+    return () => { void un.then((f) => f()); };
+  }, []);
+  return float;
+}
+
 type View = { type: "overview" } | { type: "kind"; resource: string } | { type: "helm" } | { type: "forwards" } | { type: "add" };
 
 const NS_KIND = kindByResource("namespaces")!;
 
-export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label: string, command: string) => void }) {
+export function PaneView({ runInTerminal: run }: {
+  cwd: string; runInTerminal: (label: string, command: string, opts?: { float?: boolean }) => void;
+}) {
+  const float = useFloatTerminals();
+  // Deck before the float option takes two arguments and ignores the third.
+  const runInTerminal = (label: string, command: string) => run(label, command, { float });
   const [hasKubectl, setHasKubectl] = useState<boolean | null>(null);
   const [contexts, setContexts] = useState<Context[] | null>(null);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
