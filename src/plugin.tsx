@@ -54,8 +54,8 @@ function useFloatTerminals(): boolean {
       .then((t) => setFloat(!!t.trim() && JSON.parse(t).terminalsIn === "float"))
       .catch((e) => console.warn("[kube] settings load failed", e));
     void read();
-    // config-changed names the file in full: this plugin's configs live in data/kube/.
-    const un = listen<string[]>("config-changed", (e) => { if (e.payload.includes("data/kube/settings")) void read(); });
+    // config-changed names this plugin's own configs as it names them, "settings" (the shim drops data/kube/).
+    const un = listen<string[]>("config-changed", (e) => { if (e.payload.includes("settings")) void read(); });
     return () => { void un.then((f) => f()); };
   }, []);
   return float;
