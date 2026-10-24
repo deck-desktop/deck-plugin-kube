@@ -228,6 +228,12 @@ assert.equal(
   'kubectl --context "arn:aws:eks:eu-west-1:1:cluster/x y" exec -it -n prod web-0 -c app -- sh -c "command -v bash >/dev/null && exec bash || exec sh"',
 );
 assert.ok(!k.shellCommand("", "p", "ns", "c").includes("--context"));
+assert.deepEqual(k.args.hasShell("c", "p", "ns", "app"), ["--context", "c", "exec", "-n", "ns", "p", "-c", "app", "--", "sh", "-c", "exit 0"],
+  "the context goes before --, which hands the rest to the container");
+assert.equal(k.debugCommand("c", "coredns-1", "kube-system", "coredns"),
+  "kubectl --context c debug -it -n kube-system coredns-1 --image=busybox --target=coredns --profile=general");
+assert.ok(k.noShell('OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH'));
+assert.ok(!k.noShell("error: unable to upgrade connection: container not found"), "a pod not running is not a missing shell");
 
 // ---- clusters added here -------------------------------------------------------------------
 const file = "C:\\Users\\me\\AppData\\Roaming\\Deck\\data\\kube\\kubeconfigs\\a b.yaml";

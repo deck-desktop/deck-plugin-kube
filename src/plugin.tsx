@@ -16,10 +16,11 @@ import {
   ConfirmDialog, type ConfirmState, ContextMenu, type MenuEntry, NamePrompt, type NamePromptState,
   EmptyState, IconButton, Select, CountChip, Chip, tone, notify,
 } from "deck-plugin-sdk/ui";
-import { openExternal } from "deck-plugin-sdk/bridge";
+import { configRead, openExternal } from "deck-plugin-sdk/bridge";
+import { listen } from "deck-plugin-sdk/event";
 import {
   KINDS, age, allocatable, args, crdKinds, ctxParts, eventTime, fmtBytes, fmtCpu, kindByResource, objKey,
-  parsePorts, podPorts, podSummary, requested, shellCommand,
+  debugCommand, noShell, parsePorts, podPorts, podSummary, requested, shellCommand,
   type Kind, type Obj, type Usage,
 } from "./kube";
 import {
@@ -34,11 +35,42 @@ export function dispose() {
   stopAll();
 }
 
+/**
+ * Kubernetes' row in Settings → Where things open: its terminals (a pod's Shell, installing kubectl
+ * or Helm) as a tab beside its own, or in a floating window. Deck writes the choice to this
+ * plugin's `settings` config.
+ */
+export const settings = [{
+  in: "where-things-open", key: "terminalsIn", title: "Terminals from Kubernetes",
+  desc: "A pod's Shell, and installing kubectl or Helm. As a tab, beside Kubernetes' own.",
+  choices: [["float", "Floating window"], ["tab", "Tab"]], default: "tab",
+}];
+
+/** Whether this plugin's terminals open in a floating window: its setting, kept current. */
+function useFloatTerminals(): boolean {
+  const [float, setFloat] = useState(false);
+  useEffect(() => {
+    const read = () => configRead("settings")
+      .then((t) => setFloat(!!t.trim() && JSON.parse(t).terminalsIn === "float"))
+      .catch((e) => console.warn("[kube] settings load failed", e));
+    void read();
+    // config-changed names this plugin's own configs as it names them, "settings" (the shim drops data/kube/).
+    const un = listen<string[]>("config-changed", (e) => { if (e.payload.includes("settings")) void read(); });
+    return () => { void un.then((f) => f()); };
+  }, []);
+  return float;
+}
+
 type View = { type: "overview" } | { type: "kind"; resource: string } | { type: "helm" } | { type: "forwards" } | { type: "add" };
 
 const NS_KIND = kindByResource("namespaces")!;
 
-export function PaneView({ runInTerminal }: { cwd: string; runInTerminal: (label: string, command: string) => void }) {
+export function PaneView({ runInTerminal: run }: {
+  cwd: string; runInTerminal: (label: string, command: string, opts?: { float?: boolean }) => void;
+}) {
+  const float = useFloatTerminals();
+  // Deck before the float option takes two arguments and ignores the third.
+  const runInTerminal = (label: string, command: string) => run(label, command, { float });
   const [hasKubectl, setHasKubectl] = useState<boolean | null>(null);
   const [contexts, setContexts] = useState<Context[] | null>(null);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
@@ -344,12 +376,26 @@ function ResourceView({ context, kind, ns, filter, runInTerminal }: {
       case "logs":
         setPanel({ type: "details", key: objKey(o), logs: { container: c, n: Date.now() } });
         break;
-      case "shell":
+      case "shell": {
+        const label = `${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`;
         // The terminal's kubectl goes through the cluster's SSH tunnel too, so it is opened first.
-        ensureContext(context).then(
-          () => runInTerminal(`${name}${c && (o.spec?.containers?.length ?? 0) > 1 ? `/${c}` : ""}`, shellCommand(context, name, n, c)),
-          fail("Shell"));
+        // Then a quiet exec asks whether the container has a shell: one without (a distroless
+        // image) would only show kubectl's error, so a shell in a debug container is offered
+        // instead. Any other failure (the pod not running) is the terminal's to show.
+        ensureContext(context)
+          .then(() => kubectl(args.hasShell(context, name, n, c)).then(() => true, (e: Error) => !noShell(String(e.message ?? e))))
+          .then((has) => {
+            if (has) { runInTerminal(label, shellCommand(context, name, n, c)); return; }
+            setConfirm({
+              title: `${c} has no shell`,
+              body: `Its image holds only its own program, so there is nothing to log into. Debug with busybox adds a temporary busybox container to ${name}, which sees ${c}'s processes (its files are under /proc/1/root), and opens a shell in it. That container stays in the pod until the pod is replaced.`,
+              confirmLabel: "Debug with busybox",
+              danger: false,
+              onConfirm: () => runInTerminal(`${label} (debug)`, debugCommand(context, name, n, c)),
+            });
+          }, fail("Shell"));
         break;
+      }
       case "forward": {
         const target = `${kind.kind === "Service" ? "svc" : "pod"}/${name}`;
         // kubectl port-forward carries TCP only, so the first TCP port is the one to suggest

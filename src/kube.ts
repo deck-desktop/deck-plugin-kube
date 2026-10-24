@@ -823,7 +823,16 @@ export const args = {
     ["port-forward", target, "-n", ns, `${local}:${remote}`, ...ctx(c)],
   top: (c: string, nodes: boolean) =>
     nodes ? ["top", "nodes", "--no-headers", ...ctx(c)] : ["top", "pods", "-A", "--no-headers", ...ctx(c)],
+  /** Whether the container has a shell at all, asked before a terminal opens on it. */
+  hasShell: (c: string, pod: string, ns: string, container: string) =>
+    [...ctx(c), "exec", "-n", ns, pod, "-c", container, "--", "sh", "-c", "exit 0"],
 };
+
+/**
+ * kubectl's answer when the container has no shell to run: an image holding only its own program
+ * (a "distroless" one, as coredns and metrics-server are).
+ */
+export const noShell = (err: string) => /executable file not found|no such file or directory/i.test(err);
 
 /** One argument for a terminal's command line, quoted when it needs to be. */
 const q = (s: string) => (/^[\w./:@=-]+$/.test(s) ? s : `"${s.replace(/"/g, '\\"')}"`);
@@ -835,6 +844,17 @@ const q = (s: string) => (/^[\w./:@=-]+$/.test(s) ? s : `"${s.replace(/"/g, '\\"
 export function shellCommand(c: string, pod: string, ns: string, container: string): string {
   return ["kubectl", ...ctx(c), "exec", "-it", "-n", ns, pod, "-c", container, "--"]
     .map(q).join(" ") + ` sh -c "command -v bash >/dev/null && exec bash || exec sh"`;
+}
+
+/**
+ * A shell beside a container that has none: `kubectl debug` adds a busybox ephemeral container
+ * to the pod, in the container's process namespace (`--target`), so its processes are visible
+ * and its files are under /proc/1/root. The ephemeral container stays in the pod until the pod is
+ * replaced; Kubernetes has no way to remove one. `--profile=general` is what kubectl now asks for
+ * (the default, "legacy", is deprecated and warns); it needs kubectl 1.27 or later.
+ */
+export function debugCommand(c: string, pod: string, ns: string, container: string): string {
+  return ["kubectl", ...ctx(c), "debug", "-it", "-n", ns, pod, "--image=busybox", `--target=${container}`, "--profile=general"].map(q).join(" ");
 }
 
 // ---- helm ------------------------------------------------------------------------------------
