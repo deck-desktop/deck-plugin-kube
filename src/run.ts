@@ -527,8 +527,30 @@ export function savePrefs(p: Prefs) {
 /** Stops what module scope started: the stream listener, every port-forward and every tunnel. */
 export function stopAll() {
   unlisten.then((f) => f()).catch(() => {});
-  for (const f of forwards) stop(f.id);
+  clearTimeout(resuming);
+  // What a reload's fresh copy starts again (see below). A plugin switched off or removed leaves
+  // the note unread, and its forwards stopped.
+  NOTES[RELOAD_NOTE] = {
+    at: Date.now(),
+    forwards: forwards.filter((f) => f.state !== "failed").map(({ context, ns, target, remote, local }) => ({ context, ns, target, remote, local })),
+  };
+  for (const f of forwards) { stop(f.id); dismissNotification(SOURCE, f.id); }
   for (const file of [...open.keys()]) closeTunnel(file);
   forwards = [];
   handlers.clear();
+}
+
+// Port-forwards that were open when the plugin was reloaded (a rebuild in dev, an update), started
+// again on the same local ports. The old copy's dispose had to stop them (Deck's rule 13), so a
+// reload used to end every forward. A note older than a few seconds is from a plugin switched off
+// and back on later, and is dropped.
+type ReloadNote = { at: number; forwards: Pick<Forward, "context" | "ns" | "target" | "remote" | "local">[] };
+const RELOAD_NOTE = "__deckKubeForwards";
+const NOTES = globalThis as unknown as Record<string, ReloadNote | undefined>;
+const note = NOTES[RELOAD_NOTE];
+delete NOTES[RELOAD_NOTE];
+let resuming: ReturnType<typeof setTimeout> | undefined;
+if (note && Date.now() - note.at < 10_000 && note.forwards.length) {
+  // A second for the old kubectl processes, being killed, to let go of their ports.
+  resuming = setTimeout(() => { for (const f of note.forwards) startForward(f.context, f.ns, f.target, f.remote, f.local ?? ""); }, 1000);
 }
