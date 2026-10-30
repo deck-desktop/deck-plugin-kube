@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2 (2026-10-30)
+
+- A licence, this changelog, a README rewritten with a screenshot, and the permissions it uses
+  declared. Built from its own lockfile.
+
 ## 1.1.1 (2026-10-25)
 
 - Port-forwards come back after the plugin reloads
