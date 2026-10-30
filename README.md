@@ -1,6 +1,7 @@
-# Kubernetes
+# Kubernetes for Deck
 
-Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
+Browse and manage Kubernetes clusters in the spirit of Lens. Open it from the **+** beside your
+tabs and choose **Kubernetes**.
 
 ## What it does
 
@@ -11,12 +12,14 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
   columns). Tables update as the cluster changes; sort by any column, filter by name.
 - **Details beside the table**: an overview for each kind (a pod's containers and their state, a
   deployment's images, a service's ports, a secret's values hidden until you show them, a node's
-  capacity), the object's events, and its **YAML, editable**. Saving sends only what you changed, so a
-  controller updating the object's status does not get in the way; if somebody else changed its
-  spec after you opened it, you are told, and choose between their version and yours.
+  capacity), the object's events, and its **YAML, editable**. Saving sends only what you changed,
+  so a controller updating the object's status does not get in the way; if somebody else changed
+  its spec after you opened it, you are told, and choose between their version and yours.
 - **Logs**: followed live, per container, with the previous container's log after a restart,
   timestamps, a line filter and copy.
 - **Shell**: opens a Deck terminal in the container (bash when the image has it, sh otherwise).
+  A container with no shell at all offers **Debug with busybox**, which adds a temporary busybox
+  container to the pod and opens a shell in it.
 - **Port-forwards** from a pod or a service. They keep running while the tab is closed, are listed
   under Port-forwards, open in the browser with one click, and stop when Deck exits.
 - **Actions**: scale, restart a rollout, run a cron job now, suspend or resume it, cordon,
@@ -27,10 +30,13 @@ Browse and manage Kubernetes clusters from a tab in Deck, in the spirit of Lens.
 - **Helm releases**: values (yours or with the chart's defaults), the rendered manifest, the
   revision history with rollback, and uninstall.
 
+**Terminals from Kubernetes** in Settings > Where things open: a pod's shell, and installing
+kubectl or Helm, open as a tab or in a floating window.
+
 ## For agents
 
-Deck's MCP server gets tools for the same clusters, including those added Through SSH (the
-tools open their own tunnel):
+Deck's MCP server gets tools for the same clusters, including those added through SSH (the tools
+open their own tunnel):
 
 - **Read only:** `kube_contexts`, `kube_get`, `kube_describe`, `kube_logs`, `kube_events`,
   `kube_top`.
@@ -42,7 +48,8 @@ A tool's `context` is an id from `kube_contexts`; without one it uses the cluste
 
 ## What it needs
 
-- **kubectl** on PATH. Docker Desktop brings one; otherwise `winget install Kubernetes.kubectl`.
+- **kubectl** on PATH. Docker Desktop brings one; otherwise the tab offers to install it with
+  winget.
 - **A cluster.** Every cluster in your own kubeconfig (`%USERPROFILE%\.kube\config`) shows up by
   itself. For one on a server, use **Add a cluster** (the + beside the cluster picker) and paste
   the kubeconfig it came with: k3s leaves it at `/etc/rancher/k3s/k3s.yaml`, kubeadm at
@@ -53,20 +60,11 @@ A tool's `context` is an id from `kube_contexts`; without one it uses the cluste
   you pick **Through SSH** when adding it and name the SSH host (an alias from your SSH config, or
   `user@server`). The tunnel opens when you first use the cluster and closes when Deck exits. It
   uses your SSH keys; a password prompt cannot be answered from here.
-- **helm**, for the Helm view only.
+- **helm**, for the Helm view only (the view offers to install it).
 - **metrics-server** in the cluster, for CPU and memory in use only.
 
 The plugin talks to clusters only through kubectl and helm, so it works with every kind of
 authentication your kubeconfig uses. The cluster you pick is passed to each command with
-`--context`; your kubeconfig's current context, which your terminals use, is never changed.
-
-## Developing
-
-```sh
-npm run dev            # rebuild as you edit; each save shows in your test Deck
-npm test               # the logic, in node: pod status, columns, the watch stream, arguments
-npm run install-local  # when it is done: install it into your real Deck
-```
-
-`src/kube.ts` holds everything that needs neither Deck nor a cluster, `src/run.ts` runs kubectl
-and helm, and the views are `src/plugin.tsx`, `src/Details.tsx` and `src/Helm.tsx`.
+`--context`; your kubeconfig's current context, which your terminals use, is never changed. The
+added clusters and your choices are kept in Deck's config on this machine (`clusters.json`,
+`prefs.json`, and the pasted kubeconfigs beside them).
