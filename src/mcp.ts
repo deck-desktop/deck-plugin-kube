@@ -12,12 +12,15 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer, connect } from "node:net";
 import { writeFileSync, unlinkSync, mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseContexts, tunnelServer, type KubeConfig, type Tunnel } from "./kube.js";
 import type { DeckMcp, McpServer } from "deck-plugin-sdk/mcp";
 
 /** The plugin's data folder, where added kubeconfigs are kept: the MCP server's Deck, dev or not. */
-const DATA = join(process.env.APPDATA ?? "", process.env.DECK_DEV === "1" ? "Deck-Dev" : "Deck", "data", "kube");
+/** Deck's config folder's parent, as Deck finds it: %APPDATA% on Windows, ~/.config elsewhere. */
+const ROOT = process.platform === "win32" ? (process.env.APPDATA ?? "") : (process.env.XDG_CONFIG_HOME || join(homedir(), ".config"));
+const DATA = join(ROOT, process.env.DECK_DEV === "1" ? "Deck-Dev" : "Deck", "data", "kube");
 
 /** Output past this is cut, with a note: an agent reads it all, and a big list is mostly noise. */
 const MAX_OUTPUT = 60_000;
