@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { createServer, connect } from "node:net";
 import { writeFileSync, unlinkSync, mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // src/kube.ts
@@ -43,7 +44,8 @@ var tunnelServer = (port) => `https://127.0.0.1:${port}`;
 var ctxKey = (name, file = "") => file ? `${file}|${name}` : name;
 
 // src/mcp.ts
-var DATA = join(process.env.APPDATA ?? "", process.env.DECK_DEV === "1" ? "Deck-Dev" : "Deck", "data", "kube");
+var ROOT = process.platform === "win32" ? process.env.APPDATA ?? "" : process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+var DATA = join(ROOT, process.env.DECK_DEV === "1" ? "Deck-Dev" : "Deck", "data", "kube");
 var MAX_OUTPUT = 6e4;
 function run(program, args) {
   return new Promise((resolve) => {
