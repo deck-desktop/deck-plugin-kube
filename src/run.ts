@@ -3,7 +3,7 @@
 // that outlive the tab and so live here at module scope (stopped by `dispose`).
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
-  configDelete, configRead, configWrite, dataDir, exec, openExternal, procKill, procStream, sshTunnelClose, sshTunnelOpen,
+  configDelete, configRead, configWrite, dataDir, exec, isWindows, openExternal, procKill, procStream, sshTunnelClose, sshTunnelOpen,
   type ProcLine, type ProcResult,
 } from "deck-plugin-sdk/bridge";
 import { listen } from "deck-plugin-sdk/event";
@@ -15,6 +15,16 @@ import {
 
 /** The name Deck's notifications show this plugin's under. */
 export const SOURCE = "Kubernetes";
+
+/** The command that installs kubectl or helm, run in a terminal where it can be read first: winget on
+ *  Windows; elsewhere each project's own Linux release (kubectl's binary, Helm's install script),
+ *  since Debian and Ubuntu package neither. */
+export function installCommand(tool: "kubectl" | "helm"): string {
+  if (isWindows()) return tool === "kubectl" ? "winget install --id Kubernetes.kubectl -e" : "winget install --id Helm.Helm -e";
+  return tool === "kubectl"
+    ? 'curl -fLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl'
+    : "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash";
+}
 
 // ---- one-shot calls --------------------------------------------------------------------------
 

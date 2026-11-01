@@ -24,7 +24,7 @@ import {
   type Kind, type Obj, type Usage,
 } from "./kube";
 import {
-  discardKubeconfig, ensureContext, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs,
+  discardKubeconfig, ensureContext, installCommand, installed, kubectl, kubectlJson, loadContexts, loadPrefs, savePrefs,
   SOURCE, startForward, stopAll, stopForward, tunnelHost, useForwards, useMetrics, useWatch, type Context, type Prefs,
 } from "./run";
 import { AddCluster } from "./Clusters";
@@ -152,7 +152,7 @@ export function PaneView({ runInTerminal: run }: {
     return (
       <Centered>
         <EmptyState card icon={<ShipWheel />} title="kubectl is not installed"
-          action={{ label: "Install kubectl", onClick: () => runInTerminal("Install kubectl", "winget install --id Kubernetes.kubectl -e") }}>
+          action={{ label: "Install kubectl", onClick: () => runInTerminal("Install kubectl", installCommand("kubectl")) }}>
           This tool reaches your clusters through kubectl. Install it, or turn on Kubernetes in Docker
           Desktop, which brings its own. Then <button className="underline" onClick={() => setReload(reload + 1)}>check again</button>.
         </EmptyState>

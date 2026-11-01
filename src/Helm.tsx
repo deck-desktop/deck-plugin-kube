@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { RefreshCw, Trash2, X, History, Package } from "lucide-react";
 import { ConfirmDialog, type ConfirmState, EmptyState, GhostButton, IconButton, Tabs, Toggle, tone } from "deck-plugin-sdk/ui";
 import { age, helmArgs, helmTime, type Release, type Revision } from "./kube";
-import { helm, installed } from "./run";
+import { helm, installCommand, installed } from "./run";
 import { Note, StatusChip, YamlEditor } from "./Details";
 
 export function HelmView({ context, namespace, filter, runInTerminal }: {
@@ -37,7 +37,7 @@ export function HelmView({ context, namespace, filter, runInTerminal }: {
     return (
       <div className="p-4">
         <EmptyState card icon={<Package />} title="Helm is not installed"
-          action={{ label: "Install Helm", onClick: () => runInTerminal("Install Helm", "winget install --id Helm.Helm -e") }}>
+          action={{ label: "Install Helm", onClick: () => runInTerminal("Install Helm", installCommand("helm")) }}>
           Helm releases are listed through the helm program. Install it, then open this view again.
         </EmptyState>
       </div>
